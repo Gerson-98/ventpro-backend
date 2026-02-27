@@ -1,0 +1,414 @@
+// RUTA: prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum ClientStatus {
+  Potencial
+  Contactado
+  Interesado
+  En_Seguimiento
+  Cliente_Activo
+  No_Interesado
+  Importante
+}
+
+enum MaterialType {
+  PERFIL
+  VIDRIO
+  ACCESORIO
+}
+
+enum OrderStatus {
+  en_proceso
+  en_fabricacion
+  listo_para_instalar
+  en_ruta
+  completado
+  cancelado
+}
+
+enum QuotationStatus {
+  en_proceso
+  confirmado
+}
+
+enum Role {
+  ADMIN
+  VENDEDOR
+}
+
+enum ChecklistType {
+  carga_camion
+  verificacion_instalacion
+  regreso
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// USUARIOS Y CLIENTES
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id         Int         @id @default(autoincrement())
+  email      String      @unique
+  name       String
+  password   String
+  role       Role        @default(VENDEDOR)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  quotations Quotation[]
+  checklists Checklist[]
+
+  @@map("users")
+}
+
+model Client {
+  id         Int          @id @default(autoincrement())
+  name       String
+  phone      String?
+  email      String?
+  address    String?
+  status     ClientStatus @default(Potencial)
+  orders     Order[]
+  quotations Quotation[]
+
+  @@map("clients")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MATERIALES
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Material {
+  id          Int          @id @default(autoincrement())
+  name        String       @unique
+  type        MaterialType
+  price_white Float?
+  price_color Float?
+  unit        String?
+
+  catalogoMarcos      CatalogoPerfiles[] @relation("marco_relation")
+  catalogoHojas       CatalogoPerfiles[] @relation("hoja_relation")
+  catalogoMosquiteros CatalogoPerfiles[] @relation("mosquitero_relation")
+  catalogoBatientes   CatalogoPerfiles[] @relation("batiente_relation")
+  catalogoTapajambas  CatalogoPerfiles[] @relation("tapajamba_relation")
+  accessoryRules      AccessoryRule[]
+  glassColors         GlassColor[]
+
+  @@map("Material")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COLORES
+// ─────────────────────────────────────────────────────────────────────────────
+
+model GlassColor {
+  id                Int               @id @default(autoincrement())
+  name              String            @unique
+  description       String?
+  material_id       Int?
+  material          Material?         @relation(fields: [material_id], references: [id])
+  windows           Window[]
+  quotation_windows QuotationWindow[]
+
+  @@map("glassColor")
+}
+
+model PvcColor {
+  id                Int                  @id @default(autoincrement())
+  name              String
+  description       String?
+  windows           Window[]
+  typeLinks         WindowTypePvcColor[]
+  quotation_windows QuotationWindow[]
+
+  @@map("pvcColor")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OPCIONES DEL COTIZADOR
+// ─────────────────────────────────────────────────────────────────────────────
+
+model OptionGroup {
+  id         Int      @id @default(autoincrement())
+  key        String   @unique
+  label      String
+  sort_order Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  values            OptionValue[]
+  windowTypeOptions WindowTypeOption[]
+
+  @@map("option_groups")
+}
+
+model OptionValue {
+  id         Int         @id @default(autoincrement())
+  key        String
+  label      String
+  sort_order Int         @default(0)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  group_id   Int
+  group      OptionGroup @relation(fields: [group_id], references: [id], onDelete: Cascade)
+
+  @@unique([group_id, key])
+  @@map("option_values")
+}
+
+model WindowTypeOption {
+  id         Int      @id @default(autoincrement())
+  sort_order Int      @default(0)
+
+  window_type_id Int
+  windowType     WindowType @relation(fields: [window_type_id], references: [id], onDelete: Cascade)
+
+  group_id Int
+  group    OptionGroup @relation(fields: [group_id], references: [id], onDelete: Cascade)
+
+  @@unique([window_type_id, group_id])
+  @@map("window_type_options")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TIPOS DE VENTANA Y SUS CONFIGURACIONES
+// ─────────────────────────────────────────────────────────────────────────────
+
+model WindowType {
+  id                Int                  @id @default(autoincrement())
+  name              String               @unique
+  displayName       String?
+  description       String?
+  windows           Window[]
+  pvcLinks          WindowTypePvcColor[]
+  calculation       WindowCalculation?
+  quotation_windows QuotationWindow[]
+  accessoryRules    AccessoryRule[]
+  catalogoPerfiles  CatalogoPerfiles?
+  optionGroups      WindowTypeOption[]
+
+  @@map("window_types")
+}
+
+model WindowTypePvcColor {
+  id             Int        @id @default(autoincrement())
+  window_type_id Int
+  pvcColor_id    Int
+  windowType     WindowType @relation(fields: [window_type_id], references: [id], onDelete: Cascade)
+  pvcColor       PvcColor   @relation(fields: [pvcColor_id], references: [id])
+
+  @@unique([window_type_id, pvcColor_id], name: "unique_pair")
+  @@map("window_types_pvcColor")
+}
+
+model WindowCalculation {
+  id                   Int        @id @default(autoincrement())
+  window_type_id       Int        @unique
+  hojaDivision         String
+  hojaMargen           Float      @default(0)
+  hojaDescuento        Float
+  vidrioDescuento      Float
+  calculationOverrides Json?
+  createdAt            DateTime   @default(now())
+  windowType           WindowType @relation(fields: [window_type_id], references: [id], onDelete: Cascade)
+
+  @@map("window_calculations")
+}
+
+model CatalogoPerfiles {
+  id             Int        @id @default(autoincrement())
+  window_type_id Int        @unique
+  windowType     WindowType @relation(fields: [window_type_id], references: [id], onDelete: Cascade)
+
+  perfil_marco_id      Int?
+  perfil_hoja_id       Int?
+  perfil_mosquitero_id Int?
+  perfil_batiente_id   Int?
+  perfil_tapajamba_id  Int?
+
+  perfilMarco      Material? @relation("marco_relation",      fields: [perfil_marco_id],      references: [id])
+  perfilHoja       Material? @relation("hoja_relation",       fields: [perfil_hoja_id],       references: [id])
+  perfilMosquitero Material? @relation("mosquitero_relation", fields: [perfil_mosquitero_id], references: [id])
+  perfilBatiente   Material? @relation("batiente_relation",   fields: [perfil_batiente_id],   references: [id])
+  perfilTapajamba  Material? @relation("tapajamba_relation",  fields: [perfil_tapajamba_id],  references: [id])
+
+  regla_marco      String?
+  regla_hoja       String?
+  regla_mosquitero String?
+  regla_batiente   String?
+  regla_tapajamba  String?
+
+  cant_vidrios Int?
+
+  @@map("catalogo_perfiles")
+}
+
+model AccessoryRule {
+  id             Int        @id @default(autoincrement())
+  quantity       Int
+  option_group   String?
+  option_key     String?
+  window_type_id Int
+  material_id    Int
+  windowType     WindowType @relation(fields: [window_type_id], references: [id], onDelete: Cascade)
+  material       Material   @relation(fields: [material_id], references: [id])
+
+  @@map("AccessoryRule")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COTIZACIONES
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Quotation {
+  id                  Int             @id @default(autoincrement())
+  quotationNumber     String?         @unique
+  project             String
+  status              QuotationStatus @default(en_proceso)
+  price_per_m2        Float
+  total_price         Float?
+  clientId            Int?
+  notes               String?
+  reference_image_url String?
+  include_iva         Boolean         @default(false)
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+  client              Client?         @relation(fields: [clientId], references: [id])
+  quotation_windows   QuotationWindow[]
+  generatedOrder      Order?          @relation("QuotationToOrder")
+  userId              Int?
+  user                User?           @relation(fields: [userId], references: [id])
+
+  @@map("Quotation")
+}
+
+model QuotationWindow {
+  id               Int        @id @default(autoincrement())
+  displayName      String?
+  quantity         Int        @default(1)
+  width_cm         Float
+  height_cm        Float
+  price            Float
+  price_per_m2     Float?
+  design_image_url String?
+  options          Json?
+  quotation_id     Int
+  window_type_id   Int
+  color_id         Int
+  glass_color_id   Int
+  quotation        Quotation  @relation(fields: [quotation_id], references: [id], onDelete: Cascade)
+  windowType       WindowType @relation(fields: [window_type_id], references: [id])
+  pvcColor         PvcColor   @relation(fields: [color_id], references: [id])
+  glassColor       GlassColor @relation(fields: [glass_color_id], references: [id])
+
+  @@map("QuotationWindow")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PEDIDOS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Order {
+  id                       Int          @id @default(autoincrement())
+  project                  String
+  status                   OrderStatus  @default(en_proceso)
+  total                    Float?
+  clientId                 Int?
+  include_iva              Boolean      @default(false)
+  installationStartDate    DateTime?
+  installationEndDate      DateTime?
+  createdAt                DateTime     @default(now())
+  updatedAt                DateTime     @updatedAt
+  generatedFromQuotationId Int?         @unique
+  generatedFromQuotation   Quotation?   @relation("QuotationToOrder", fields: [generatedFromQuotationId], references: [id])
+  client                   Client?      @relation(fields: [clientId], references: [id])
+  windows                  Window[]
+  checklists               Checklist[]
+
+  @@map("orders")
+}
+
+model Window {
+  id               Int         @id @default(autoincrement())
+  displayName      String?
+  width_cm         Float
+  height_cm        Float
+  price            Float
+  quantity         Int         @default(1)
+  hojaAncho        Float?
+  hojaAlto         Float?
+  vidrioAncho      Float?
+  vidrioAlto       Float?
+  design_image_url String?
+  options          Json?
+  order_id         Int?
+  window_type_id   Int?
+  color_id         Int?
+  glass_color_id   Int?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  pvcColor         PvcColor?   @relation(fields: [color_id], references: [id])
+  glassColor       GlassColor? @relation(fields: [glass_color_id], references: [id])
+  order            Order?      @relation(fields: [order_id], references: [id])
+  windowType       WindowType? @relation(fields: [window_type_id], references: [id])
+
+  @@map("windows")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHECKLISTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Ítems configurables por el admin (plantillas)
+model ChecklistTemplate {
+  id         Int           @id @default(autoincrement())
+  type       ChecklistType
+  label      String
+  sort_order Int           @default(0)
+  active     Boolean       @default(true)
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  items      ChecklistItem[]
+
+  @@map("checklist_templates")
+}
+
+// Instancia de checklist completada (una por pedido + tipo)
+model Checklist {
+  id              Int           @id @default(autoincrement())
+  type            ChecklistType
+  order_id        Int
+  completed_by_id Int
+  completedAt     DateTime      @default(now())
+  notes           String?
+  order           Order         @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  completedBy     User          @relation(fields: [completed_by_id], references: [id])
+  items           ChecklistItem[]
+
+  @@unique([order_id, type])
+  @@map("checklists")
+}
+
+// Snapshot de cada ítem al momento de completar el checklist
+model ChecklistItem {
+  id          Int               @id @default(autoincrement())
+  checklist_id Int
+  template_id  Int
+  label        String           // snapshot del label en el momento de completar
+  checked      Boolean          @default(false)
+  checklist    Checklist        @relation(fields: [checklist_id], references: [id], onDelete: Cascade)
+  template     ChecklistTemplate @relation(fields: [template_id], references: [id])
+
+  @@map("checklist_items")
+}
