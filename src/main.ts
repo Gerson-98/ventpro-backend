@@ -11,7 +11,7 @@ async function bootstrap() {
     'http://localhost:5173',
     'https://ventprofesional.com',
     'https://www.ventprofesional.com',
-    'https://peachpuff-cat-711358.hostingersite.com',
+    'https://ventpro-frontend.onrender.com',
   ];
 
   app.enableCors({
