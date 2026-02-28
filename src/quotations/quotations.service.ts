@@ -57,20 +57,15 @@ export class QuotationsService {
   }
 
   // ─── Validar traslape de fechas ──────────────────────────────────────────────
-  // Busca pedidos activos (no cancelados) cuyas fechas se crucen con el rango dado.
   private async assertNoDateOverlap(
     startDate: Date,
     endDate: Date,
-    excludeOrderId?: number, // para cuando se reprograma un pedido existente
+    excludeOrderId?: number,
   ): Promise<void> {
     const conflictingOrder = await this.prisma.order.findFirst({
       where: {
-        // Excluir pedidos cancelados
         status: { not: OrderStatus.cancelado },
-        // Excluir el pedido actual si es una reprogramación
         ...(excludeOrderId ? { id: { not: excludeOrderId } } : {}),
-        // Traslape: el pedido existente empieza antes de que termine el nuevo
-        // Y termina después de que empieza el nuevo
         installationStartDate: { not: null },
         installationEndDate: { not: null },
         AND: [
@@ -222,6 +217,21 @@ export class QuotationsService {
   ) {
     await this.assertOwnership(id, user);
 
+    // No permitir editar una cotización confirmada directamente
+    // (debe pasar por reopen primero)
+    const current = await this.prisma.quotation.findUnique({
+      where: { id },
+      select: { status: true },
+    });
+    if (!current) {
+      throw new NotFoundException(`Cotización con ID #${id} no encontrada.`);
+    }
+    if (current.status === QuotationStatus.confirmado) {
+      throw new BadRequestException(
+        'Esta cotización está confirmada. Usa "Reabrir" antes de editarla.',
+      );
+    }
+
     const { windows, ...quotationData } = updateQuotationDto;
 
     return this.prisma.$transaction(async (prisma) => {
@@ -313,7 +323,50 @@ export class QuotationsService {
     });
   }
 
+  // ─── reopen ──────────────────────────────────────────────────────────────────
+  // Devuelve la cotización a estado en_proceso para poder editarla.
+  // El pedido vinculado queda intacto hasta que se re-confirme.
+  // Solo ADMIN puede reabrir.
+
+  async reopen(id: number, user: AuthUser) {
+    if (!this.isAdmin(user)) {
+      throw new ForbiddenException(
+        'Solo un administrador puede reabrir una cotización confirmada.',
+      );
+    }
+
+    const quotation = await this.prisma.quotation.findUnique({
+      where: { id },
+      include: { generatedOrder: { select: { id: true } } },
+    });
+
+    if (!quotation) {
+      throw new NotFoundException(`Cotización con ID #${id} no encontrada.`);
+    }
+
+    if (quotation.status !== QuotationStatus.confirmado) {
+      throw new BadRequestException(
+        'Solo se pueden reabrir cotizaciones en estado "confirmado".',
+      );
+    }
+
+    // Cambiar status a en_proceso — el pedido sigue existiendo y vinculado
+    return this.prisma.quotation.update({
+      where: { id },
+      data: { status: QuotationStatus.en_proceso },
+      include: {
+        client: true,
+        quotation_windows: {
+          include: { windowType: true, pvcColor: true, glassColor: true },
+        },
+        generatedOrder: true,
+      },
+    });
+  }
+
   // ─── confirm ─────────────────────────────────────────────────────────────────
+  // Primera confirmación: crea el pedido.
+  // Re-confirmación (ya tenía generatedOrder): actualiza el pedido existente.
 
   async confirm(
     id: number,
@@ -332,23 +385,33 @@ export class QuotationsService {
     const startDate = new Date(installationStartDate);
     const endDate = new Date(installationEndDate);
 
-    // ✅ Validar traslape ANTES de abrir la transacción
-    await this.assertNoDateOverlap(startDate, endDate);
+    // Cargar cotización con pedido vinculado para saber si es primera vez o re-confirmación
+    const quotation = await this.prisma.quotation.findUnique({
+      where: { id },
+      include: {
+        quotation_windows: true,
+        generatedOrder: { select: { id: true } },
+      },
+    });
+
+    if (!quotation) {
+      throw new NotFoundException(`Cotización con ID #${id} no encontrada.`);
+    }
+
+    // Solo se puede confirmar cuando está en_proceso (primera vez o tras reabrir)
+    if (quotation.status === QuotationStatus.confirmado) {
+      throw new BadRequestException(
+        `La cotización #${id} ya está confirmada. Usa "Reabrir" para modificarla.`,
+      );
+    }
+
+    const existingOrderId = quotation.generatedOrder?.id ?? undefined;
+
+    // Validar traslape excluyendo el pedido propio si es re-confirmación
+    await this.assertNoDateOverlap(startDate, endDate, existingOrderId);
 
     return this.prisma.$transaction(async (prisma) => {
-      const quotation = await prisma.quotation.findUnique({
-        where: { id },
-        include: { quotation_windows: true },
-      });
-      if (!quotation)
-        throw new NotFoundException(`Cotización con ID #${id} no encontrada.`);
-
-      if (quotation.status === QuotationStatus.confirmado) {
-        throw new BadRequestException(
-          `La cotización #${id} ya ha sido confirmada.`,
-        );
-      }
-
+      // Pre-calcular medidas de hoja/vidrio para todas las ventanas
       const windowsToCreate = await Promise.all(
         quotation.quotation_windows.map(async (win) => {
           const winOptions = (win as any).options || {};
@@ -378,29 +441,62 @@ export class QuotationsService {
         }),
       );
 
-      const newOrder = await prisma.order.create({
-        data: {
-          project: quotation.project,
-          total: quotation.total_price,
-          status: OrderStatus.en_proceso,
-          clientId: quotation.clientId,
-          include_iva: quotation?.include_iva || false,
-          generatedFromQuotationId: id,
-          installationStartDate: startDate,
-          installationEndDate: endDate,
-          windows: { create: windowsToCreate },
-        },
-      });
+      let resultOrder: { id: number };
 
+      if (existingOrderId) {
+        // ── RE-CONFIRMACIÓN: actualizar pedido existente ──────────────────────
+        // 1. Borrar todas las ventanas actuales del pedido
+        await prisma.window.deleteMany({
+          where: { order_id: existingOrderId },
+        });
+
+        // 2. Recrear ventanas con los datos actualizados de la cotización
+        await prisma.window.createMany({
+          data: windowsToCreate.map((w) => ({
+            ...w,
+            order_id: existingOrderId,
+          })),
+        });
+
+        // 3. Actualizar campos del pedido (total, fechas, include_iva)
+        resultOrder = await prisma.order.update({
+          where: { id: existingOrderId },
+          data: {
+            project: quotation.project,
+            total: quotation.total_price,
+            include_iva: quotation.include_iva ?? false,
+            clientId: quotation.clientId,
+            installationStartDate: startDate,
+            installationEndDate: endDate,
+          },
+        });
+      } else {
+        // ── PRIMERA CONFIRMACIÓN: crear pedido nuevo ──────────────────────────
+        resultOrder = await prisma.order.create({
+          data: {
+            project: quotation.project,
+            total: quotation.total_price,
+            status: OrderStatus.en_proceso,
+            clientId: quotation.clientId,
+            include_iva: quotation.include_iva ?? false,
+            generatedFromQuotationId: id,
+            installationStartDate: startDate,
+            installationEndDate: endDate,
+            windows: { create: windowsToCreate },
+          },
+        });
+      }
+
+      // Marcar cotización como confirmada y vincular al pedido
       await prisma.quotation.update({
         where: { id: quotation.id },
         data: {
           status: QuotationStatus.confirmado,
-          generatedOrder: { connect: { id: newOrder.id } },
+          generatedOrder: { connect: { id: resultOrder.id } },
         },
       });
 
-      return newOrder;
+      return resultOrder;
     });
   }
 

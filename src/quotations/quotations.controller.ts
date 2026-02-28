@@ -47,6 +47,13 @@ export class QuotationsController {
     return this.quotationsService.confirm(id, confirmQuotationDto, req.user);
   }
 
+  // ── Reabrir cotización confirmada para poder editarla ──────────────────────
+  // Solo ADMIN. El pedido vinculado no se toca hasta re-confirmar.
+  @Post(':id/reopen')
+  reopen(@Param('id', ParseIntPipe) id: number, @Request() req) {
+    return this.quotationsService.reopen(id, req.user);
+  }
+
   @Patch(':id')
   update(
     @Param('id', ParseIntPipe) id: number,
