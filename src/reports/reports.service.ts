@@ -546,6 +546,9 @@ export class ReportsService {
     return this.generateCutOptimization(order.windows);
   }
 
+  // ─── generateCutOptimization (con trazabilidad por ventana) ────────────────
+  // Cada corte ahora lleva { length, windowLabel } para que el frontend pueda
+  // mostrar a qué ventana pertenece cada corte en el plan impreso.
   private async generateCutOptimization(windows: any[]) {
     const catalogMap = new Map(
       (
@@ -562,21 +565,28 @@ export class ReportsService {
     );
 
     const BAR_LENGTH = 580;
+
+    type LabeledCut = { length: number; windowLabel: string };
+
     const individualCutList = new Map<
       string,
-      { color: string; cuts: number[] }
+      { color: string; cuts: LabeledCut[] }
     >();
     const combinableCutList = new Map<
       string,
-      { color: string; hojaCuts: number[]; mosquiteroCuts: number[] }
+      { color: string; hojaCuts: LabeledCut[]; mosquiteroCuts: LabeledCut[] }
     >();
 
-    for (const window of windows) {
+    for (let wi = 0; wi < windows.length; wi++) {
+      const window = windows[wi];
       if (!window || !window.windowType || !window.pvcColor) continue;
       const catalogEntry = catalogMap.get(window.window_type_id);
       if (!catalogEntry) continue;
 
       const windowQuantity = window.quantity || 1;
+
+      // Etiqueta legible para el fabricante: "V1 · 1.20x1.50m"
+      const windowLabel = `V${wi + 1} - ${(window.width_cm / 100).toFixed(2)}x${(window.height_cm / 100).toFixed(2)}m`;
 
       const profiles = [
         {
@@ -616,9 +626,15 @@ export class ReportsService {
         );
         if (individualCuts.length === 0) continue;
 
-        const allCuts: number[] = [];
-        for (let i = 0; i < windowQuantity; i++)
-          allCuts.push(...individualCuts);
+        // Expandir por cantidad, etiquetando cada pieza
+        const allCuts: LabeledCut[] = [];
+        for (let qi = 0; qi < windowQuantity; qi++) {
+          const suffix =
+            windowQuantity > 1 ? ` (${qi + 1}/${windowQuantity})` : '';
+          for (const cut of individualCuts) {
+            allCuts.push({ length: cut, windowLabel: windowLabel + suffix });
+          }
+        }
 
         const isSlidingType = this.isSlidingWindowType(window.windowType.name);
         const isHojaOrMosquitero =
@@ -627,7 +643,6 @@ export class ReportsService {
         if (isSlidingType && isHojaOrMosquitero) {
           const hojaProfileName = catalogEntry.perfilHoja?.name;
           const mosquiteroProfileName = catalogEntry.perfilMosquitero?.name;
-
           if (!hojaProfileName || !mosquiteroProfileName) continue;
 
           const key = `${window.pvcColor.name}|${hojaProfileName}|${mosquiteroProfileName}`;
@@ -659,8 +674,8 @@ export class ReportsService {
 
     for (const [key, value] of individualCutList.entries()) {
       const [color, profileName] = key.split('|');
-      const optimizedBins = this.optimizeCuts(value.cuts, BAR_LENGTH);
-      this.formatAndAddResult(
+      const optimizedBins = this.optimizeCutsLabeled(value.cuts, BAR_LENGTH);
+      this.formatAndAddResultLabeled(
         optimizationResult,
         profileName,
         color,
@@ -672,13 +687,13 @@ export class ReportsService {
     for (const [key, value] of combinableCutList.entries()) {
       const [color, hojaProfileName, mosquiteroProfileName] = key.split('|');
       const { optimizedHojaBins, optimizedMosquiteroBins } =
-        this.optimizeCombinedCuts(
+        this.optimizeCombinedCutsLabeled(
           value.hojaCuts,
           value.mosquiteroCuts,
           BAR_LENGTH,
         );
       if (optimizedHojaBins.length > 0)
-        this.formatAndAddResult(
+        this.formatAndAddResultLabeled(
           optimizationResult,
           hojaProfileName,
           color,
@@ -686,7 +701,7 @@ export class ReportsService {
           BAR_LENGTH,
         );
       if (optimizedMosquiteroBins.length > 0)
-        this.formatAndAddResult(
+        this.formatAndAddResultLabeled(
           optimizationResult,
           mosquiteroProfileName,
           color,
@@ -696,6 +711,106 @@ export class ReportsService {
     }
 
     return optimizationResult;
+  }
+
+  // ── Helpers con trazabilidad de ventana ──────────────────────────────────────
+
+  private optimizeCutsLabeled(
+    cuts: { length: number; windowLabel: string }[],
+    barLength: number,
+  ): { length: number; windowLabel: string }[][] {
+    const sorted = [...cuts].sort((a, b) => b.length - a.length);
+    const bins: {
+      cuts: { length: number; windowLabel: string }[];
+      remaining: number;
+    }[] = [];
+    for (const cut of sorted) {
+      let placed = false;
+      for (const bin of bins) {
+        if (cut.length <= bin.remaining) {
+          bin.cuts.push(cut);
+          bin.remaining -= cut.length;
+          placed = true;
+          break;
+        }
+      }
+      if (!placed)
+        bins.push({ cuts: [cut], remaining: barLength - cut.length });
+    }
+    return bins.map((b) => b.cuts);
+  }
+
+  private optimizeCombinedCutsLabeled(
+    hojaCuts: { length: number; windowLabel: string }[],
+    mosquiteroCuts: { length: number; windowLabel: string }[],
+    barLength: number,
+  ) {
+    type LC = { length: number; windowLabel: string };
+    const freq = new Map<number, { hoja: LC[]; mosquitero: LC[] }>();
+    hojaCuts.forEach((c) => {
+      const f = freq.get(c.length) || { hoja: [], mosquitero: [] };
+      f.hoja.push(c);
+      freq.set(c.length, f);
+    });
+    mosquiteroCuts.forEach((c) => {
+      const f = freq.get(c.length) || { hoja: [], mosquitero: [] };
+      f.mosquitero.push(c);
+      freq.set(c.length, f);
+    });
+
+    const finalHoja: LC[] = [];
+    const finalMosq: LC[] = [];
+
+    // Primera pasada: triples (2 hojas + 1 mosquitero misma medida en una barra)
+    for (const [, f] of freq.entries()) {
+      const triples = Math.min(
+        Math.floor(f.hoja.length / 2),
+        f.mosquitero.length,
+      );
+      for (let i = 0; i < triples; i++) {
+        finalHoja.push(f.hoja.shift()!, f.hoja.shift()!);
+        finalMosq.push(f.mosquitero.shift()!);
+      }
+    }
+    // Segunda pasada: restantes
+    for (const [, f] of freq.entries()) {
+      finalHoja.push(...f.hoja);
+      finalMosq.push(...f.mosquitero);
+    }
+
+    return {
+      optimizedHojaBins: this.optimizeCutsLabeled(finalHoja, barLength),
+      optimizedMosquiteroBins: this.optimizeCutsLabeled(finalMosq, barLength),
+    };
+  }
+
+  private formatAndAddResultLabeled(
+    resultObj: any,
+    profileName: string,
+    color: string,
+    bins: { length: number; windowLabel: string }[][],
+    barLength: number,
+  ) {
+    if (!resultObj[profileName]) resultObj[profileName] = [];
+    resultObj[profileName].push({
+      color,
+      totalBars: bins.length,
+      bars: bins.map((bar, index) => {
+        const totalUsed = bar.reduce((sum, c) => sum + c.length, 0);
+        const sorted = [...bar].sort((a, b) => b.length - a.length);
+        return {
+          barNumber: index + 1,
+          // Cada corte: { length: number, windowLabel: string }
+          cuts: sorted.map((c) => ({
+            length: c.length,
+            windowLabel: c.windowLabel,
+          })),
+          totalUsed: Number(totalUsed.toFixed(1)),
+          waste: Number((barLength - totalUsed).toFixed(1)),
+          efficiency: Number(((totalUsed / barLength) * 100).toFixed(2)),
+        };
+      }),
+    });
   }
 
   private isSlidingWindowType(typeName: string): boolean {
@@ -812,6 +927,8 @@ export class ReportsService {
       cuts.push(width);
       for (let i = 0; i < multiplier; i++) cuts.push(height);
     } else if (rule.includes('ANCHO') && rule.includes('ALTO')) {
+      // *N = N piezas totales (N/2 anchos + N/2 altos)
+      // Ej: *4 → 2 anchos + 2 altos; *6 → 3 anchos + 3 altos
       const repeatCount = multiplier / 2;
       for (let i = 0; i < repeatCount; i++) cuts.push(width, height);
     } else if (rule.includes('ALTO')) {
@@ -841,8 +958,10 @@ export class ReportsService {
       return currentWidth + currentHeight * multiplier;
     let length = 0;
     if (rule.includes('ANCHO') && rule.includes('ALTO'))
-      length = currentWidth + currentHeight;
-    else if (rule.includes('ALTO')) length = currentHeight;
-    return length * multiplier;
+      // (ancho + alto) * multiplicador: para *2 → 2 anchos + 2 altos
+      length = (currentWidth + currentHeight) * multiplier;
+    else if (rule.includes('ALTO')) length = currentHeight * multiplier;
+    else length = 0;
+    return length;
   }
 }
