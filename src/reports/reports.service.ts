@@ -3,16 +3,59 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Window, Material, AccessoryRule } from '@prisma/client';
+import { CostCalculatorService } from '../cost-calculator/cost-calculator.service';
 
 type AccessoryRuleWithMaterial = AccessoryRule & { material: Material };
 
 @Injectable()
 export class ReportsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private costCalculator: CostCalculatorService,
+  ) {}
+
+  private async enrichWindowMeasures(windows: any[]): Promise<any[]> {
+    const allCalcParams = await this.prisma.windowCalculation.findMany();
+    const calcParamsMap = new Map(
+      allCalcParams.map((c) => [c.window_type_id, c]),
+    );
+
+    return windows.map((window) => {
+      const options = (window.options as Record<string, string>) || {};
+      const calcParams = calcParamsMap.get(window.window_type_id ?? 0);
+
+      const { hojaAncho, hojaAlto, vidrioDescuento } =
+        this.costCalculator.calcularMedidasHoja(
+          window.width_cm,
+          window.height_cm,
+          calcParams,
+          options,
+        );
+
+      const mosquiteroAncho = Number((hojaAncho - vidrioDescuento).toFixed(2));
+      const mosquiteroAlto = Number((hojaAlto - vidrioDescuento).toFixed(2));
+
+      return {
+        ...window,
+        hojaAncho,
+        hojaAlto,
+        mosquiteroAncho,
+        mosquiteroAlto,
+        vidrioAncho: mosquiteroAncho,
+        vidrioAlto: mosquiteroAlto,
+      };
+    });
+  }
 
   private async processWindowsToReport(windows: any[]) {
+    const enrichedWindows = await this.enrichWindowMeasures(windows);
+
+    // ── Cargar todos los materiales una sola vez ───────────────────────────
+    // materialsMap: por nombre (para DUELA, etc.)
+    // materialsById: por ID (para resolver perfil overrides del ruleOverrides)
     const allMaterials = await this.prisma.material.findMany();
     const materialsMap = new Map(allMaterials.map((m) => [m.name, m]));
+    const materialsById = new Map(allMaterials.map((m) => [m.id, m]));
 
     const catalogMap = new Map(
       (
@@ -44,7 +87,7 @@ export class ReportsService {
     const accessoriesReportMap = new Map<string, any>();
     const glassReportMap = new Map<string, any>();
 
-    for (const window of windows) {
+    for (const window of enrichedWindows) {
       if (!window || !window.windowType || !window.pvcColor) continue;
 
       const catalogEntry = catalogMap.get(window.window_type_id);
@@ -53,97 +96,92 @@ export class ReportsService {
       const windowQuantity = window.quantity || 1;
       const options = (window.options as any) || {};
 
-      let dynamicProfiles = [
+      const hojaAncho = window.hojaAncho ?? window.width_cm;
+      const hojaAlto = window.hojaAlto ?? window.height_cm;
+      const mosquiteroAncho = window.mosquiteroAncho ?? hojaAncho;
+      const mosquiteroAlto = window.mosquiteroAlto ?? hojaAlto;
+      const vidrioAncho = window.vidrioAncho ?? hojaAncho;
+      const vidrioAlto = window.vidrioAlto ?? hojaAlto;
+
+      // ── aplicarRuleOverrides ahora resuelve reglas + perfiles + cant_vidrios
+      const reglas = this.costCalculator.aplicarRuleOverrides(
+        catalogEntry,
+        options,
+      );
+
+      // ── Resolver perfil final para cada slot ──────────────────────────────
+      // Si el ruleOverrides definió un perfil_X_id para la opción elegida,
+      // ese material reemplaza al base. Sin ningún switch hardcodeado.
+      const perfilMarcoFinal =
+        reglas.perfil_marco_id !== null
+          ? (materialsById.get(reglas.perfil_marco_id) ??
+            catalogEntry.perfilMarco)
+          : catalogEntry.perfilMarco;
+      const perfilHojaFinal =
+        reglas.perfil_hoja_id !== null
+          ? (materialsById.get(reglas.perfil_hoja_id) ??
+            catalogEntry.perfilHoja)
+          : catalogEntry.perfilHoja;
+      const perfilMosquiteroFinal =
+        reglas.perfil_mosquitero_id !== null
+          ? (materialsById.get(reglas.perfil_mosquitero_id) ??
+            catalogEntry.perfilMosquitero)
+          : catalogEntry.perfilMosquitero;
+      const perfilBatienteFinal =
+        reglas.perfil_batiente_id !== null
+          ? (materialsById.get(reglas.perfil_batiente_id) ??
+            catalogEntry.perfilBatiente)
+          : catalogEntry.perfilBatiente;
+      const perfilTapajambaFinal =
+        reglas.perfil_tapajamba_id !== null
+          ? (materialsById.get(reglas.perfil_tapajamba_id) ??
+            catalogEntry.perfilTapajamba)
+          : catalogEntry.perfilTapajamba;
+
+      // ── cant_vidrios resuelto ──────────────────────────────────────────────
+      const cantVidrios = reglas.cant_vidrios ?? catalogEntry.cant_vidrios;
+
+      // ── El switch hardcodeado fue ELIMINADO completamente ─────────────────
+      // Antes: casos especiales para PUERTA DE LUJO, VENTANA ABATIBLE, etc.
+      // Ahora: todo se configura en el JSON ruleOverrides desde la app.
+      // El admin elige qué perfil usar según cada opción — sin tocar código.
+      const dynamicProfiles = [
         {
           type: 'MARCO',
-          material: catalogEntry.perfilMarco,
-          rule: catalogEntry.regla_marco,
+          material: perfilMarcoFinal,
+          rule: reglas.regla_marco,
+          ancho: window.width_cm,
+          alto: window.height_cm,
         },
         {
           type: 'HOJA',
-          material: catalogEntry.perfilHoja,
-          rule: catalogEntry.regla_hoja,
+          material: perfilHojaFinal,
+          rule: reglas.regla_hoja,
+          ancho: hojaAncho,
+          alto: hojaAlto,
         },
         {
           type: 'MOSQUITERO',
-          material: catalogEntry.perfilMosquitero,
-          rule: catalogEntry.regla_mosquitero,
+          material: perfilMosquiteroFinal,
+          rule: reglas.regla_mosquitero,
+          ancho: mosquiteroAncho,
+          alto: mosquiteroAlto,
         },
         {
           type: 'BATIENTE',
-          material: catalogEntry.perfilBatiente,
-          rule: catalogEntry.regla_batiente,
+          material: perfilBatienteFinal,
+          rule: reglas.regla_batiente,
+          ancho: hojaAncho,
+          alto: hojaAlto,
         },
         {
           type: 'TAPAJAMBA',
-          material: catalogEntry.perfilTapajamba,
-          rule: catalogEntry.regla_tapajamba,
+          material: perfilTapajambaFinal,
+          rule: reglas.regla_tapajamba,
+          ancho: window.width_cm,
+          alto: window.height_cm,
         },
       ];
-
-      const isDuela = window.glassColor?.name.toUpperCase().includes('DUELA');
-
-      switch (window.windowType.name) {
-        case 'PUERTA CORREDIZA 2 HOJAS 66 CM MARCO 45 CM':
-        case 'VENTANA CORREDIZA 2 HOJAS 55 CM MARCO 45 CM':
-        case 'VENTANA CORREDIZA 2 HOJAS 55 CM MARCO 5 CM':
-        case 'VENTANA CORREDIZA 4 HOJAS 55 CM MARCO 45 CM':
-        case 'VENTANA CORREDIZA 4 HOJAS 55 CM MARCO 5 CM':
-        case 'PUERTA CORREDIZA 3 HOJAS 66 CM MARCO 45 CM':
-        case 'PUERTA CORREDIZA 3 HOJAS 66 CM MARCO 5 CM':
-        case 'VENTANA CORREDIZA 3 HOJAS 55 CM MARCO 45 CM':
-        case 'VENTANA CORREDIZA 3 HOJAS 55 CM MARCO 5 CM':
-        case 'PUERTA CORREDIZA 4 HOJAS 66 CM MARCO 45 CM':
-        case 'PUERTA CORREDIZA 4 HOJAS 66 CM MARCO 5 CM':
-          if (isDuela) {
-            const batienteCorredizo = materialsMap.get('BATIENTE CORREDIZO');
-            const batienteInsulado = materialsMap.get('BATIENTE INSULADO');
-            if (batienteCorredizo && batienteInsulado) {
-              dynamicProfiles = dynamicProfiles.map((p) =>
-                p.material?.id === batienteCorredizo.id
-                  ? { ...p, material: batienteInsulado }
-                  : p,
-              );
-            }
-          }
-          break;
-        case 'PUERTA ANDINA':
-          if (window.glassColor?.name.toUpperCase() === 'VIDRIO Y DUELA') {
-            const batienteParaDuela = materialsMap.get('BATIENTE PARA DUELA');
-            if (batienteParaDuela && catalogEntry.regla_batiente) {
-              dynamicProfiles.push({
-                type: 'BATIENTE',
-                material: batienteParaDuela,
-                rule: catalogEntry.regla_batiente,
-              });
-            }
-          }
-          break;
-        case 'VENTANA ABATIBLE':
-          const materialHojaAbatible =
-            options.tipo_perfil === 'adentro'
-              ? materialsMap.get('HOJA ABATIBLE ADENTRO')
-              : materialsMap.get('HOJA ABATIBLE AFUERA');
-          if (materialHojaAbatible && catalogEntry.regla_hoja) {
-            dynamicProfiles = dynamicProfiles.map((p) =>
-              p.type === 'HOJA' ? { ...p, material: materialHojaAbatible } : p,
-            );
-          }
-          if (options.cantidad_hojas === '2') {
-            const tDeFijo = materialsMap.get('T DE FIJO');
-            if (tDeFijo) {
-              const key = `${window.pvcColor.name}|${tDeFijo.name}`;
-              const existing = profilesReportMap.get(key) || {
-                material: tDeFijo,
-                pvcColor: window.pvcColor.name,
-                totalLength: 0,
-              };
-              existing.totalLength += window.height_cm * windowQuantity;
-              profilesReportMap.set(key, existing);
-            }
-          }
-          break;
-      }
 
       // 1. ACCESORIOS
       if (window.window_type_id) {
@@ -171,10 +209,10 @@ export class ReportsService {
       // 2. PERFILES
       for (const profile of dynamicProfiles) {
         if (profile.material && profile.rule) {
-          const requiredLength = this.calculateProfileLength(
+          const requiredLength = this.costCalculator.applyRule(
             profile.rule,
-            profile.type,
-            window,
+            profile.ancho,
+            profile.alto,
           );
           const key = `${window.pvcColor.name}|${profile.material.name}`;
           const existing = profilesReportMap.get(key) || {
@@ -190,23 +228,12 @@ export class ReportsService {
       // 3. VIDRIOS
       if (window.glassColor) {
         const glassNameUpper = window.glassColor.name.toUpperCase();
-        let vAncho = window.vidrioAncho || 0;
-        let vAlto = window.vidrioAlto || 0;
-
-        if (vAncho === 0 || vAlto === 0) {
-          const reglaBase = catalogEntry.regla_hoja || catalogEntry.regla_marco;
-          if (reglaBase) {
-            vAncho =
-              this.calculateProfileLength(reglaBase, 'ANCHO', window) - 9;
-            vAlto = this.calculateProfileLength(reglaBase, 'ALTO', window) - 9;
-          }
-        }
 
         if (glassNameUpper.includes('DUELA')) {
           const duelaMaterial = materialsMap.get('DUELA');
           if (duelaMaterial) {
-            const stripsNeeded = Math.ceil(vAlto / 15);
-            const totalDuelaLength = stripsNeeded * vAncho;
+            const stripsNeeded = Math.ceil(vidrioAlto / 15);
+            const totalDuelaLength = stripsNeeded * vidrioAncho;
             const key = `${window.pvcColor.name}|${duelaMaterial.name}`;
             const existing = profilesReportMap.get(key) || {
               material: duelaMaterial,
@@ -218,10 +245,11 @@ export class ReportsService {
           }
         } else if (glassNameUpper !== 'VIDRIO Y DUELA') {
           const glassMaterial = materialsMap.get(window.glassColor.name);
-          if (glassMaterial && vAncho > 0 && vAlto > 0) {
+          if (glassMaterial && vidrioAncho > 0 && vidrioAlto > 0) {
             const key = glassMaterial.name;
-            const glassCount = catalogEntry.cant_vidrios ?? 1;
-            const glassArea = vAncho * vAlto * glassCount * windowQuantity;
+            const glassCount = cantVidrios ?? 1;
+            const glassArea =
+              vidrioAncho * vidrioAlto * glassCount * windowQuantity;
             const existing = glassReportMap.get(key) || {
               material: glassMaterial,
               totalArea: 0,
@@ -311,50 +339,31 @@ export class ReportsService {
       where: { id: quotationId },
       include: {
         quotation_windows: {
-          include: {
-            windowType: { include: { calculation: true } },
-            pvcColor: true,
-            glassColor: true,
-          },
+          include: { windowType: true, pvcColor: true, glassColor: true },
         },
       },
     });
     if (!quotation)
       throw new NotFoundException(`Cotización #${quotationId} no encontrada`);
 
-    const normalizedWindows = quotation.quotation_windows.map((qw) => {
-      const calc = qw.windowType?.calculation;
-
-      const hAncho = calc
-        ? qw.width_cm - (calc.hojaDescuento || 0)
-        : qw.width_cm;
-      const hAlto = calc
-        ? qw.height_cm - (calc.hojaDescuento || 0)
-        : qw.height_cm;
-
-      return {
-        ...qw,
-        window_type_id: qw.window_type_id,
-        windowType: qw.windowType,
-        pvcColor: qw.pvcColor,
-        glassColor: qw.glassColor,
-        hojaAncho: hAncho,
-        hojaAlto: hAlto,
-        vidrioAncho: calc ? hAncho - (calc.vidrioDescuento || 0) : hAncho,
-        vidrioAlto: calc ? hAlto - (calc.vidrioDescuento || 0) : hAlto,
-      };
-    });
+    const normalizedWindows = quotation.quotation_windows.map((qw) => ({
+      ...qw,
+      window_type_id: qw.window_type_id,
+      windowType: qw.windowType,
+      pvcColor: qw.pvcColor,
+      glassColor: qw.glassColor,
+      options: qw.options || {},
+      quantity: qw.quantity || 1,
+    }));
 
     return this.processWindowsToReport(normalizedWindows);
   }
 
-  // ─── NUEVO: Costo de materiales de un pedido ─────────────────────────────
   async getOrderMaterialCost(orderId: number): Promise<number> {
     const materials = await this.generateProfilesReport(orderId);
     return materials.reduce((sum, item) => sum + (item.precioTotal || 0), 0);
   }
 
-  // ─── NUEVO: Resumen financiero individual de un pedido ───────────────────
   async getOrderFinancialSummary(orderId: number) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
@@ -390,22 +399,20 @@ export class ReportsService {
     };
   }
 
-  // ─── NUEVO: Dashboard de ganancias (todos los pedidos completados/activos) ─
   async getDashboardProfits(filters: {
     fromDate?: string;
     toDate?: string;
     status?: string;
+    userId?: number;
   }) {
     const where: any = {};
 
-    // Filtro por estado — por defecto excluye solo cancelados
     if (filters.status && filters.status !== 'todos') {
       where.status = filters.status;
     } else {
       where.status = { not: 'cancelado' };
     }
 
-    // Filtro por rango de fechas (basado en createdAt)
     if (filters.fromDate || filters.toDate) {
       where.createdAt = {};
       if (filters.fromDate) where.createdAt.gte = new Date(filters.fromDate);
@@ -414,6 +421,10 @@ export class ReportsService {
         to.setHours(23, 59, 59, 999);
         where.createdAt.lte = to;
       }
+    }
+
+    if (filters.userId) {
+      where.generatedFromQuotation = { userId: filters.userId };
     }
 
     const orders = await this.prisma.order.findMany({
@@ -431,7 +442,6 @@ export class ReportsService {
       orderBy: { createdAt: 'desc' },
     });
 
-    // Calcular costo de materiales para cada pedido en paralelo
     const summaries = await Promise.all(
       orders.map(async (order) => {
         try {
@@ -439,7 +449,6 @@ export class ReportsService {
           const salePrice = order.total || 0;
           const profit = salePrice - materialCost;
           const profitMargin = salePrice > 0 ? (profit / salePrice) * 100 : 0;
-
           return {
             orderId: order.id,
             project: order.project,
@@ -453,7 +462,6 @@ export class ReportsService {
             installationStartDate: order.installationStartDate,
           };
         } catch {
-          // Pedido sin ventanas o sin catálogo — lo incluimos con costo 0
           const salePrice = order.total || 0;
           return {
             orderId: order.id,
@@ -471,7 +479,6 @@ export class ReportsService {
       }),
     );
 
-    // Totales acumulados
     const totals = summaries.reduce(
       (acc, s) => ({
         totalSales: acc.totalSales + s.salePrice,
@@ -486,7 +493,6 @@ export class ReportsService {
         ? (totals.totalProfit / totals.totalSales) * 100
         : 0;
 
-    // Agrupar por mes para la gráfica
     const monthlyMap = new Map<
       string,
       { month: string; sales: number; cost: number; profit: number }
@@ -546,10 +552,12 @@ export class ReportsService {
     return this.generateCutOptimization(order.windows);
   }
 
-  // ─── generateCutOptimization (con trazabilidad por ventana) ────────────────
-  // Cada corte ahora lleva { length, windowLabel } para que el frontend pueda
-  // mostrar a qué ventana pertenece cada corte en el plan impreso.
   private async generateCutOptimization(windows: any[]) {
+    const enrichedWindows = await this.enrichWindowMeasures(windows);
+
+    const allMaterials = await this.prisma.material.findMany();
+    const materialsById = new Map(allMaterials.map((m) => [m.id, m]));
+
     const catalogMap = new Map(
       (
         await this.prisma.catalogoPerfiles.findMany({
@@ -565,7 +573,6 @@ export class ReportsService {
     );
 
     const BAR_LENGTH = 580;
-
     type LabeledCut = { length: number; windowLabel: string };
 
     const individualCutList = new Map<
@@ -577,75 +584,133 @@ export class ReportsService {
       { color: string; hojaCuts: LabeledCut[]; mosquiteroCuts: LabeledCut[] }
     >();
 
-    for (let wi = 0; wi < windows.length; wi++) {
-      const window = windows[wi];
+    for (let wi = 0; wi < enrichedWindows.length; wi++) {
+      const window = enrichedWindows[wi];
       if (!window || !window.windowType || !window.pvcColor) continue;
       const catalogEntry = catalogMap.get(window.window_type_id);
       if (!catalogEntry) continue;
 
       const windowQuantity = window.quantity || 1;
-
-      // Etiqueta legible para el fabricante: "V1 · 1.20x1.50m"
       const windowLabel = `V${wi + 1} - ${(window.width_cm / 100).toFixed(2)}x${(window.height_cm / 100).toFixed(2)}m`;
+
+      const hojaAncho = window.hojaAncho ?? window.width_cm;
+      const hojaAlto = window.hojaAlto ?? window.height_cm;
+      const mosquiteroAncho = window.mosquiteroAncho ?? hojaAncho;
+      const mosquiteroAlto = window.mosquiteroAlto ?? hojaAlto;
+
+      const optionsCut = (window.options as Record<string, string>) || {};
+      const reglasCut = this.costCalculator.aplicarRuleOverrides(
+        catalogEntry,
+        optionsCut,
+      );
+
+      // ── Resolver perfiles con overrides ────────────────────────────────────
+      const perfilHojaFinal =
+        reglasCut.perfil_hoja_id !== null
+          ? (materialsById.get(reglasCut.perfil_hoja_id) ??
+            catalogEntry.perfilHoja)
+          : catalogEntry.perfilHoja;
+      const perfilMosquiteroFinal =
+        reglasCut.perfil_mosquitero_id !== null
+          ? (materialsById.get(reglasCut.perfil_mosquitero_id) ??
+            catalogEntry.perfilMosquitero)
+          : catalogEntry.perfilMosquitero;
 
       const profiles = [
         {
           type: 'MARCO',
-          material: catalogEntry.perfilMarco,
-          rule: catalogEntry.regla_marco,
+          material:
+            reglasCut.perfil_marco_id !== null
+              ? (materialsById.get(reglasCut.perfil_marco_id) ??
+                catalogEntry.perfilMarco)
+              : catalogEntry.perfilMarco,
+          rule: reglasCut.regla_marco,
+          ancho: window.width_cm,
+          alto: window.height_cm,
         },
         {
           type: 'HOJA',
-          material: catalogEntry.perfilHoja,
-          rule: catalogEntry.regla_hoja,
+          material: perfilHojaFinal,
+          rule: reglasCut.regla_hoja,
+          ancho: hojaAncho,
+          alto: hojaAlto,
         },
         {
           type: 'MOSQUITERO',
-          material: catalogEntry.perfilMosquitero,
-          rule: catalogEntry.regla_mosquitero,
+          material: perfilMosquiteroFinal,
+          rule: reglasCut.regla_mosquitero,
+          ancho: hojaAncho, // cedazo usa misma medida que hoja, no la del vidrio
+          alto: hojaAlto,
         },
         {
           type: 'BATIENTE',
-          material: catalogEntry.perfilBatiente,
-          rule: catalogEntry.regla_batiente,
+          material:
+            reglasCut.perfil_batiente_id !== null
+              ? (materialsById.get(reglasCut.perfil_batiente_id) ??
+                catalogEntry.perfilBatiente)
+              : catalogEntry.perfilBatiente,
+          rule: reglasCut.regla_batiente,
+          ancho: hojaAncho,
+          alto: hojaAlto,
         },
         {
           type: 'TAPAJAMBA',
-          material: catalogEntry.perfilTapajamba,
-          rule: catalogEntry.regla_tapajamba,
+          material:
+            reglasCut.perfil_tapajamba_id !== null
+              ? (materialsById.get(reglasCut.perfil_tapajamba_id) ??
+                catalogEntry.perfilTapajamba)
+              : catalogEntry.perfilTapajamba,
+          rule: reglasCut.regla_tapajamba,
+          ancho: window.width_cm,
+          alto: window.height_cm,
         },
       ];
 
+      // Whitelist: solo estos perfiles entran al optimizador de cortes
+      const CUT_PROFILES_WHITELIST = new Set([
+        'HOJA ABATIBLE ADENTRO',
+        'HOJA ABATIBLE AFUERA',
+        'HOJA ANDINA',
+        'HOJA CEDAZO',
+        'HOJA CORREDIZA S60 5,5 CM',
+        'HOJA CORREDIZA S60 6,6 CM',
+        'HOJA DE LUJO ADENTRO',
+        'HOJA DE LUJO AFUERA',
+        'HOJA PROYECTABLE',
+        'MARCO CORREDIZO S80 4,5 CM',
+        'MARCO CORREDIZO S80 5 CM',
+        'MARCO FIJO 60',
+      ]);
+
       for (const profile of profiles) {
         if (!profile.material || !profile.rule) continue;
+        if (!CUT_PROFILES_WHITELIST.has(profile.material.name)) continue;
 
-        const individualCuts = this.getIndividualCuts(
+        // Generar cortes con etiqueta de dimensión (A=Ancho, H=Alto)
+        const individualCutsWithDim = this.getCutsWithDimension(
           profile.rule,
-          profile.type,
-          window,
+          profile.ancho,
+          profile.alto,
         );
-        if (individualCuts.length === 0) continue;
+        if (individualCutsWithDim.length === 0) continue;
 
-        // Expandir por cantidad, etiquetando cada pieza
         const allCuts: LabeledCut[] = [];
-        for (let qi = 0; qi < windowQuantity; qi++) {
-          const suffix =
-            windowQuantity > 1 ? ` (${qi + 1}/${windowQuantity})` : '';
-          for (const cut of individualCuts) {
-            allCuts.push({ length: cut, windowLabel: windowLabel + suffix });
-          }
+        for (let q = 0; q < windowQuantity; q++) {
+          individualCutsWithDim.forEach(({ length, dim }) => {
+            const baseLabel = `V${wi + 1}`;
+            const dimLabel = `${baseLabel} ${dim} - ${(window.width_cm / 100).toFixed(2)}x${(window.height_cm / 100).toFixed(2)}m`;
+            allCuts.push({ length, windowLabel: dimLabel });
+          });
         }
 
-        const isSlidingType = this.isSlidingWindowType(window.windowType.name);
-        const isHojaOrMosquitero =
-          profile.type === 'HOJA' || profile.type === 'MOSQUITERO';
-
-        if (isSlidingType && isHojaOrMosquitero) {
-          const hojaProfileName = catalogEntry.perfilHoja?.name;
-          const mosquiteroProfileName = catalogEntry.perfilMosquitero?.name;
-          if (!hojaProfileName || !mosquiteroProfileName) continue;
-
-          const key = `${window.pvcColor.name}|${hojaProfileName}|${mosquiteroProfileName}`;
+        const isSliding = this.isSlidingWindowType(window.windowType.name);
+        if (
+          isSliding &&
+          (profile.type === 'HOJA' || profile.type === 'MOSQUITERO') &&
+          catalogEntry.perfilHoja &&
+          catalogEntry.perfilMosquitero
+        ) {
+          const key = `${window.pvcColor.name}|${catalogEntry.perfilHoja.name}|${catalogEntry.perfilMosquitero.name}`;
           if (!combinableCutList.has(key)) {
             combinableCutList.set(key, {
               color: window.pvcColor.name,
@@ -653,10 +718,18 @@ export class ReportsService {
               mosquiteroCuts: [],
             });
           }
+          // Etiquetar cada corte con su tipo de perfil para que el modal
+          // pueda distinguir HOJA de CEDAZO dentro de una barra combinada ⚡
+          // Formato sufijo: "|HOJA" o "|CEDAZO" — parseCutLabel lo extrae sin romper nada
+          const profileTag = profile.type === 'HOJA' ? '|HOJA' : '|CEDAZO';
+          const taggedCuts = allCuts.map((c) => ({
+            ...c,
+            windowLabel: c.windowLabel + profileTag,
+          }));
           if (profile.type === 'HOJA') {
-            combinableCutList.get(key)!.hojaCuts.push(...allCuts);
+            combinableCutList.get(key)!.hojaCuts.push(...taggedCuts);
           } else {
-            combinableCutList.get(key)!.mosquiteroCuts.push(...allCuts);
+            combinableCutList.get(key)!.mosquiteroCuts.push(...taggedCuts);
           }
         } else {
           const key = `${window.pvcColor.name}|${profile.material.name}`;
@@ -686,26 +759,42 @@ export class ReportsService {
 
     for (const [key, value] of combinableCutList.entries()) {
       const [color, hojaProfileName, mosquiteroProfileName] = key.split('|');
-      const { optimizedHojaBins, optimizedMosquiteroBins } =
+      const { combinedBins, hojaOnlyBins, mosquiteroOnlyBins } =
         this.optimizeCombinedCutsLabeled(
           value.hojaCuts,
           value.mosquiteroCuts,
           BAR_LENGTH,
         );
-      if (optimizedHojaBins.length > 0)
+
+      // ⚡ Barras combinadas: hoja + cedazo con el mismo largo → máquina corta en paralelo
+      const combinedName = `${hojaProfileName} + ${mosquiteroProfileName}`;
+      if (combinedBins.length > 0)
+        this.formatAndAddResultLabeled(
+          optimizationResult,
+          combinedName,
+          color,
+          combinedBins,
+          BAR_LENGTH,
+        );
+
+      // ✂ Sobrantes de hoja sin par de cedazo → se usan sufijo para evitar colisión
+      // con entradas de individualCutList que puedan usar el mismo perfil
+      if (hojaOnlyBins.length > 0)
         this.formatAndAddResultLabeled(
           optimizationResult,
           hojaProfileName,
           color,
-          optimizedHojaBins,
+          hojaOnlyBins,
           BAR_LENGTH,
         );
-      if (optimizedMosquiteroBins.length > 0)
+
+      // ✂ Sobrantes de cedazo sin par de hoja (caso raro pero posible)
+      if (mosquiteroOnlyBins.length > 0)
         this.formatAndAddResultLabeled(
           optimizationResult,
           mosquiteroProfileName,
           color,
-          optimizedMosquiteroBins,
+          mosquiteroOnlyBins,
           BAR_LENGTH,
         );
     }
@@ -713,7 +802,50 @@ export class ReportsService {
     return optimizationResult;
   }
 
-  // ── Helpers con trazabilidad de ventana ──────────────────────────────────────
+  // ── Cortes individuales con etiqueta de dimensión ────────────────────────────
+  // Retorna cada corte con 'A' (ancho) o 'H' (alto) según la regla
+  private getCutsWithDimension(
+    rule: string,
+    ancho: number,
+    alto: number,
+  ): { length: number; dim: string }[] {
+    // Genera los cortes físicos individuales con su dimensión (A=Ancho, H=Alto).
+    // Regla "SUMAR ANCHO Y ALTO * 2" → 2 anchos + 2 altos = 4 cortes físicos.
+    // Nota: getIndividualCutsFromMeasures en cost-calculator usa multiplier/2 porque
+    // calcula pares para metros lineales. Aquí calculamos piezas reales para el optimizador.
+    const r = rule.toUpperCase().trim();
+    const match = r.match(/\*\s*(\d+)/);
+    const multiplier = match ? parseInt(match[1], 10) : 2; // default 2 (1A+1H)
+    const cuts: { length: number; dim: string }[] = [];
+    const a = Number(ancho.toFixed(1));
+    const h = Number(alto.toFixed(1));
+
+    if (r.includes('SUMAR ANCHO Y MULTIPLICAR ALTO')) {
+      // Ej: "SUMAR ANCHO Y MULTIPLICAR ALTO * 3" → 1 pieza de ancho + 3 de alto
+      cuts.push({ length: a, dim: 'A' });
+      for (let i = 0; i < multiplier; i++) cuts.push({ length: h, dim: 'H' });
+    } else if (r.includes('ANCHO') && r.includes('ALTO')) {
+      // Ej: "SUMAR ANCHO Y ALTO * 2" → multiplier/2 = 1 PAR = 1A+1H × multiplier veces
+      // Pero "* 2" significa 2 anchos + 2 altos en total
+      // multiplier anchos + multiplier altos:
+      for (let i = 0; i < multiplier; i++) cuts.push({ length: a, dim: 'A' });
+      for (let i = 0; i < multiplier; i++) cuts.push({ length: h, dim: 'H' });
+    } else if (r.includes('SUMAR ALTO')) {
+      for (let i = 0; i < multiplier; i++) cuts.push({ length: h, dim: 'H' });
+    } else if (r.includes('ALTO')) {
+      for (let i = 0; i < multiplier; i++) cuts.push({ length: h, dim: 'H' });
+    } else {
+      // Fallback
+      for (let i = 0; i < multiplier; i++) cuts.push({ length: a, dim: 'A' });
+      for (let i = 0; i < multiplier; i++) cuts.push({ length: h, dim: 'H' });
+    }
+
+    return cuts;
+  }
+
+  private isSlidingWindowType(typeName: string): boolean {
+    return typeName.toUpperCase().includes('CORREDIZA');
+  }
 
   private optimizeCutsLabeled(
     cuts: { length: number; windowLabel: string }[],
@@ -744,44 +876,79 @@ export class ReportsService {
     hojaCuts: { length: number; windowLabel: string }[],
     mosquiteroCuts: { length: number; windowLabel: string }[],
     barLength: number,
-  ) {
-    type LC = { length: number; windowLabel: string };
-    const freq = new Map<number, { hoja: LC[]; mosquitero: LC[] }>();
-    hojaCuts.forEach((c) => {
-      const f = freq.get(c.length) || { hoja: [], mosquitero: [] };
-      f.hoja.push(c);
-      freq.set(c.length, f);
-    });
-    mosquiteroCuts.forEach((c) => {
-      const f = freq.get(c.length) || { hoja: [], mosquitero: [] };
-      f.mosquitero.push(c);
-      freq.set(c.length, f);
-    });
+  ): {
+    combinedBins: { length: number; windowLabel: string }[][];
+    hojaOnlyBins: { length: number; windowLabel: string }[][];
+    mosquiteroOnlyBins: { length: number; windowLabel: string }[][];
+  } {
+    // ── Lógica de emparejamiento por largo ─────────────────────────────────
+    // La máquina corta hoja + cedazo en paralelo SOLO cuando tienen el mismo
+    // largo de corte. Emparejamos primero, luego FFD a cada grupo por separado.
 
-    const finalHoja: LC[] = [];
-    const finalMosq: LC[] = [];
+    // 1. Contar disponibilidad por largo para cada perfil
+    const hojaByLength = new Map<
+      number,
+      { length: number; windowLabel: string }[]
+    >();
+    for (const cut of hojaCuts) {
+      if (!hojaByLength.has(cut.length)) hojaByLength.set(cut.length, []);
+      hojaByLength.get(cut.length)!.push(cut);
+    }
+    const mosquiteroByLength = new Map<
+      number,
+      { length: number; windowLabel: string }[]
+    >();
+    for (const cut of mosquiteroCuts) {
+      if (!mosquiteroByLength.has(cut.length))
+        mosquiteroByLength.set(cut.length, []);
+      mosquiteroByLength.get(cut.length)!.push(cut);
+    }
 
-    // Primera pasada: triples (2 hojas + 1 mosquitero misma medida en una barra)
-    for (const [, f] of freq.entries()) {
-      const triples = Math.min(
-        Math.floor(f.hoja.length / 2),
-        f.mosquitero.length,
-      );
-      for (let i = 0; i < triples; i++) {
-        finalHoja.push(f.hoja.shift()!, f.hoja.shift()!);
-        finalMosq.push(f.mosquitero.shift()!);
+    // 2. Emparejar cortes del mismo largo — cada par va a barras combinadas
+    const pairedCuts: { length: number; windowLabel: string }[] = [];
+    const hojaLeftover: { length: number; windowLabel: string }[] = [];
+    const mosquiteroLeftover: { length: number; windowLabel: string }[] = [];
+
+    for (const [length, hojaGroup] of hojaByLength.entries()) {
+      const mosquiteroGroup = mosquiteroByLength.get(length) ?? [];
+      const pairCount = Math.min(hojaGroup.length, mosquiteroGroup.length);
+
+      // Los pares van al pool combinado (hoja + cedazo del mismo largo juntos)
+      for (let i = 0; i < pairCount; i++) {
+        pairedCuts.push(hojaGroup[i]);
+        pairedCuts.push(mosquiteroGroup[i]);
+      }
+      // Sobrantes de hoja sin par
+      for (let i = pairCount; i < hojaGroup.length; i++) {
+        hojaLeftover.push(hojaGroup[i]);
+      }
+      // Sobrantes de cedazo sin par
+      for (let i = pairCount; i < mosquiteroGroup.length; i++) {
+        mosquiteroLeftover.push(mosquiteroGroup[i]);
       }
     }
-    // Segunda pasada: restantes
-    for (const [, f] of freq.entries()) {
-      finalHoja.push(...f.hoja);
-      finalMosq.push(...f.mosquitero);
+    // Cedazo que no tiene ningún largo correspondiente en hoja
+    for (const [length, mosquiteroGroup] of mosquiteroByLength.entries()) {
+      if (!hojaByLength.has(length)) {
+        mosquiteroLeftover.push(...mosquiteroGroup);
+      }
     }
 
-    return {
-      optimizedHojaBins: this.optimizeCutsLabeled(finalHoja, barLength),
-      optimizedMosquiteroBins: this.optimizeCutsLabeled(finalMosq, barLength),
-    };
+    // 3. FFD independiente para cada grupo
+    const combinedBins =
+      pairedCuts.length > 0
+        ? this.optimizeCutsLabeled(pairedCuts, barLength)
+        : [];
+    const hojaOnlyBins =
+      hojaLeftover.length > 0
+        ? this.optimizeCutsLabeled(hojaLeftover, barLength)
+        : [];
+    const mosquiteroOnlyBins =
+      mosquiteroLeftover.length > 0
+        ? this.optimizeCutsLabeled(mosquiteroLeftover, barLength)
+        : [];
+
+    return { combinedBins, hojaOnlyBins, mosquiteroOnlyBins };
   }
 
   private formatAndAddResultLabeled(
@@ -800,7 +967,6 @@ export class ReportsService {
         const sorted = [...bar].sort((a, b) => b.length - a.length);
         return {
           barNumber: index + 1,
-          // Cada corte: { length: number, windowLabel: string }
           cuts: sorted.map((c) => ({
             length: c.length,
             windowLabel: c.windowLabel,
@@ -813,32 +979,22 @@ export class ReportsService {
     });
   }
 
-  private isSlidingWindowType(typeName: string): boolean {
-    return typeName.toUpperCase().includes('CORREDIZA');
-  }
-
-  private formatAndAddResult(
-    resultObj: any,
-    profileName: string,
-    color: string,
-    bins: number[][],
-    barLength: number,
-  ) {
-    if (!resultObj[profileName]) resultObj[profileName] = [];
-    resultObj[profileName].push({
-      color,
-      totalBars: bins.length,
-      bars: bins.map((bar, index) => {
-        const totalUsed = bar.reduce((sum, cut) => sum + cut, 0);
-        return {
-          barNumber: index + 1,
-          cuts: bar.sort((a, b) => b - a),
-          totalUsed: Number(totalUsed.toFixed(1)),
-          waste: Number((barLength - totalUsed).toFixed(1)),
-          efficiency: Number(((totalUsed / barLength) * 100).toFixed(2)),
-        };
-      }),
-    });
+  private optimizeCuts(cuts: number[], barLength: number): number[][] {
+    const sortedCuts = cuts.sort((a, b) => b - a);
+    const bins: { cuts: number[]; remaining: number }[] = [];
+    for (const cut of sortedCuts) {
+      let placed = false;
+      for (const bin of bins) {
+        if (cut <= bin.remaining) {
+          bin.cuts.push(cut);
+          bin.remaining -= cut;
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) bins.push({ cuts: [cut], remaining: barLength - cut });
+    }
+    return bins.map((bin) => bin.cuts);
   }
 
   private optimizeCombinedCuts(
@@ -890,78 +1046,27 @@ export class ReportsService {
     };
   }
 
-  private optimizeCuts(cuts: number[], barLength: number): number[][] {
-    const sortedCuts = cuts.sort((a, b) => b - a);
-    const bins: { cuts: number[]; remaining: number }[] = [];
-    for (const cut of sortedCuts) {
-      let placed = false;
-      for (const bin of bins) {
-        if (cut <= bin.remaining) {
-          bin.cuts.push(cut);
-          bin.remaining -= cut;
-          placed = true;
-          break;
-        }
-      }
-      if (!placed) bins.push({ cuts: [cut], remaining: barLength - cut });
-    }
-    return bins.map((bin) => bin.cuts);
-  }
-
-  private getIndividualCuts(
-    rule: string,
-    profileType: string,
-    window: Window,
-  ): number[] {
-    const useWindowMeasures =
-      profileType === 'MARCO' || profileType === 'TAPAJAMBA';
-    const width = useWindowMeasures ? window.width_cm : (window.hojaAncho ?? 0);
-    const height = useWindowMeasures
-      ? window.height_cm
-      : (window.hojaAlto ?? 0);
-    const multiplierMatch = rule.match(/\*(\d+)$/);
-    const multiplier = multiplierMatch ? parseInt(multiplierMatch[1], 10) : 1;
-    const cuts: number[] = [];
-
-    if (rule.includes('SUMAR ANCHO Y MULTIPLICAR ALTO')) {
-      cuts.push(width);
-      for (let i = 0; i < multiplier; i++) cuts.push(height);
-    } else if (rule.includes('ANCHO') && rule.includes('ALTO')) {
-      // *N = N piezas totales (N/2 anchos + N/2 altos)
-      // Ej: *4 → 2 anchos + 2 altos; *6 → 3 anchos + 3 altos
-      const repeatCount = multiplier / 2;
-      for (let i = 0; i < repeatCount; i++) cuts.push(width, height);
-    } else if (rule.includes('ALTO')) {
-      for (let i = 0; i < multiplier; i++) cuts.push(height);
-    }
-
-    return cuts.map((cut) => Number(cut.toFixed(1)));
-  }
-
-  private calculateProfileLength(
-    rule: string,
-    profileType: string,
-    window: Window,
-  ): number {
-    const useWindowMeasures =
-      profileType === 'MARCO' || profileType === 'TAPAJAMBA';
-    const currentWidth = useWindowMeasures
-      ? window.width_cm
-      : (window.hojaAncho ?? 0);
-    const currentHeight = useWindowMeasures
-      ? window.height_cm
-      : (window.hojaAlto ?? 0);
-    const multiplierMatch = rule.match(/\*(\d+)$/);
-    const multiplier = multiplierMatch ? parseInt(multiplierMatch[1], 10) : 1;
-
-    if (rule.includes('SUMAR ANCHO Y MULTIPLICAR ALTO'))
-      return currentWidth + currentHeight * multiplier;
-    let length = 0;
-    if (rule.includes('ANCHO') && rule.includes('ALTO'))
-      // (ancho + alto) * multiplicador: para *2 → 2 anchos + 2 altos
-      length = (currentWidth + currentHeight) * multiplier;
-    else if (rule.includes('ALTO')) length = currentHeight * multiplier;
-    else length = 0;
-    return length;
+  private formatAndAddResult(
+    resultObj: any,
+    profileName: string,
+    color: string,
+    bins: number[][],
+    barLength: number,
+  ) {
+    if (!resultObj[profileName]) resultObj[profileName] = [];
+    resultObj[profileName].push({
+      color,
+      totalBars: bins.length,
+      bars: bins.map((bar, index) => {
+        const totalUsed = bar.reduce((sum, cut) => sum + cut, 0);
+        return {
+          barNumber: index + 1,
+          cuts: bar.sort((a, b) => b - a),
+          totalUsed: Number(totalUsed.toFixed(1)),
+          waste: Number((barLength - totalUsed).toFixed(1)),
+          efficiency: Number(((totalUsed / barLength) * 100).toFixed(2)),
+        };
+      }),
+    });
   }
 }

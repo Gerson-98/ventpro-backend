@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   ConflictException,
+  BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { MaterialType } from '@prisma/client';
@@ -51,7 +52,69 @@ export class MaterialsService {
   }
 
   async remove(id: number) {
-    await this.findOne(id);
+    // 1. Verificar que el material existe
+    const material = await this.findOne(id);
+
+    // ─────────────────────────────────────────────────────────────────
+    // 2. Verificar si está siendo usado en reglas de accesorios
+    // ─────────────────────────────────────────────────────────────────
+    const accessoryRules = await this.prisma.accessoryRule.findMany({
+      where: { material_id: id },
+      include: {
+        windowType: {
+          select: { name: true },
+        },
+      },
+    });
+
+    if (accessoryRules.length > 0) {
+      // Obtener nombres únicos de tipos de ventana afectados
+      const tiposAfectados = [
+        ...new Set(accessoryRules.map((r) => r.windowType.name)),
+      ].join(', ');
+
+      throw new BadRequestException(
+        `No se puede eliminar "${material.name}" porque está siendo usado como accesorio en ` +
+          `${accessoryRules.length} regla(s) de los siguientes tipos de ventana: ${tiposAfectados}. ` +
+          `Elimine primero esas reglas de accesorios.`,
+      );
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // 3. Verificar si está siendo usado en catálogo de perfiles
+    // ─────────────────────────────────────────────────────────────────
+    const catalogoUso = await this.prisma.catalogoPerfiles.findMany({
+      where: {
+        OR: [
+          { perfil_marco_id: id },
+          { perfil_hoja_id: id },
+          { perfil_mosquitero_id: id },
+          { perfil_batiente_id: id },
+          { perfil_tapajamba_id: id },
+        ],
+      },
+      include: {
+        windowType: {
+          select: { name: true },
+        },
+      },
+    });
+
+    if (catalogoUso.length > 0) {
+      const tiposAfectados = catalogoUso
+        .map((c) => c.windowType.name)
+        .join(', ');
+
+      throw new BadRequestException(
+        `No se puede eliminar "${material.name}" porque está asignado como perfil en ` +
+          `los siguientes tipos de ventana: ${tiposAfectados}. ` +
+          `Desasigne el perfil primero antes de eliminar este material.`,
+      );
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // 4. Sin dependencias — proceder con la eliminación
+    // ─────────────────────────────────────────────────────────────────
     return this.prisma.material.delete({ where: { id } });
   }
 }

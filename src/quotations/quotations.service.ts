@@ -56,46 +56,6 @@ export class QuotationsService {
     }
   }
 
-  // ─── Validar traslape de fechas ──────────────────────────────────────────────
-  private async assertNoDateOverlap(
-    startDate: Date,
-    endDate: Date,
-    excludeOrderId?: number,
-  ): Promise<void> {
-    const conflictingOrder = await this.prisma.order.findFirst({
-      where: {
-        status: { not: OrderStatus.cancelado },
-        ...(excludeOrderId ? { id: { not: excludeOrderId } } : {}),
-        installationStartDate: { not: null },
-        installationEndDate: { not: null },
-        AND: [
-          { installationStartDate: { lte: endDate } },
-          { installationEndDate: { gte: startDate } },
-        ],
-      },
-      select: {
-        id: true,
-        project: true,
-        installationStartDate: true,
-        installationEndDate: true,
-      },
-    });
-
-    if (conflictingOrder) {
-      const fmt = (d: Date) =>
-        new Date(d).toLocaleDateString('es-GT', {
-          day: 'numeric',
-          month: 'long',
-          year: 'numeric',
-        });
-      throw new BadRequestException(
-        `Las fechas se cruzan con el pedido "${conflictingOrder.project}" ` +
-          `(${fmt(conflictingOrder.installationStartDate!)} - ${fmt(conflictingOrder.installationEndDate!)}). ` +
-          `Elige otras fechas.`,
-      );
-    }
-  }
-
   // ─── create ─────────────────────────────────────────────────────────────────
 
   async create(createQuotationDto: CreateQuotationDto, user: AuthUser) {
@@ -176,7 +136,10 @@ export class QuotationsService {
 
     return this.prisma.quotation.findMany({
       where: whereClause,
-      include: { client: true },
+      include: {
+        client: true,
+        user: { select: { id: true, name: true } },
+      },
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -188,6 +151,7 @@ export class QuotationsService {
       where: { id },
       include: {
         client: true,
+        user: { select: { id: true, name: true } },
         quotation_windows: {
           include: { windowType: true, pvcColor: true, glassColor: true },
         },
@@ -407,8 +371,7 @@ export class QuotationsService {
 
     const existingOrderId = quotation.generatedOrder?.id ?? undefined;
 
-    // Validar traslape excluyendo el pedido propio si es re-confirmación
-    await this.assertNoDateOverlap(startDate, endDate, existingOrderId);
+    // No se valida traslape: se permiten múltiples instalaciones el mismo día.
 
     return this.prisma.$transaction(async (prisma) => {
       // Pre-calcular medidas de hoja/vidrio para todas las ventanas

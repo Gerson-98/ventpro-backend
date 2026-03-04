@@ -252,6 +252,14 @@ model CatalogoPerfiles {
 
   cant_vidrios Int?
 
+  // Sobrescrituras de reglas según opción elegida por el usuario.
+  // Mismo patrón que calculationOverrides en WindowCalculation.
+  // Estructura: { "option_value_key": { "regla_campo": "NUEVA REGLA" } }
+  // Ejemplo:
+  //   { "laterales_ocultos": { "regla_mosquitero": "SUMAR ANCHO Y ALTO Y *4" },
+  //     "tres_iguales":      { "regla_mosquitero": "SUMAR ANCHO Y ALTO Y *2" } }
+  ruleOverrides Json?
+
   @@map("catalogo_perfiles")
 }
 
@@ -371,7 +379,6 @@ model Window {
 // CHECKLISTS
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Ítems configurables por el admin (plantillas)
 model ChecklistTemplate {
   id         Int           @id @default(autoincrement())
   type       ChecklistType
@@ -385,7 +392,6 @@ model ChecklistTemplate {
   @@map("checklist_templates")
 }
 
-// Instancia de checklist completada (una por pedido + tipo)
 model Checklist {
   id              Int           @id @default(autoincrement())
   type            ChecklistType
@@ -401,12 +407,11 @@ model Checklist {
   @@map("checklists")
 }
 
-// Snapshot de cada ítem al momento de completar el checklist
 model ChecklistItem {
   id          Int               @id @default(autoincrement())
   checklist_id Int
   template_id  Int
-  label        String           // snapshot del label en el momento de completar
+  label        String
   checked      Boolean          @default(false)
   checklist    Checklist        @relation(fields: [checklist_id], references: [id], onDelete: Cascade)
   template     ChecklistTemplate @relation(fields: [template_id], references: [id])

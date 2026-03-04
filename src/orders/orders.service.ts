@@ -26,46 +26,6 @@ export class OrdersService {
     return user.role === 'ADMIN';
   }
 
-  // ─── Validar traslape de fechas ───────────────────────────────────────────
-  private async assertNoDateOverlap(
-    startDate: Date,
-    endDate: Date,
-    excludeOrderId?: number,
-  ): Promise<void> {
-    const conflictingOrder = await this.prisma.order.findFirst({
-      where: {
-        status: { not: OrderStatus.cancelado },
-        ...(excludeOrderId ? { id: { not: excludeOrderId } } : {}),
-        installationStartDate: { not: null },
-        installationEndDate: { not: null },
-        AND: [
-          { installationStartDate: { lte: endDate } },
-          { installationEndDate: { gte: startDate } },
-        ],
-      },
-      select: {
-        id: true,
-        project: true,
-        installationStartDate: true,
-        installationEndDate: true,
-      },
-    });
-
-    if (conflictingOrder) {
-      const fmt = (d: Date) =>
-        new Date(d).toLocaleDateString('es-GT', {
-          day: 'numeric',
-          month: 'long',
-          year: 'numeric',
-        });
-      throw new BadRequestException(
-        `Las fechas se cruzan con el pedido "${conflictingOrder.project}" ` +
-          `(${fmt(conflictingOrder.installationStartDate!)} - ${fmt(conflictingOrder.installationEndDate!)}). ` +
-          `Elige otras fechas.`,
-      );
-    }
-  }
-
   // ─── create ──────────────────────────────────────────────────────────────
   create(data: {
     project: string;
@@ -111,6 +71,11 @@ export class OrdersService {
       include: {
         client: true,
         _count: { select: { windows: true } },
+        generatedFromQuotation: {
+          select: {
+            user: { select: { id: true, name: true } },
+          },
+        },
       },
       orderBy: { id: 'desc' },
     });
@@ -231,8 +196,7 @@ export class OrdersService {
     const startDate = new Date(installationStartDate);
     const endDate = new Date(installationEndDate);
 
-    await this.assertNoDateOverlap(startDate, endDate, id);
-
+    // No se valida traslape: se permiten múltiples instalaciones en el mismo día.
     return this.prisma.order.update({
       where: { id },
       data: {

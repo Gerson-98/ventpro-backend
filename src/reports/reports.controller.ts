@@ -48,11 +48,13 @@ export class ReportsController {
     @Query('fromDate') fromDate?: string,
     @Query('toDate') toDate?: string,
     @Query('status') status?: string,
+    @Query('userId') userId?: string,
   ) {
     return this.reportsService.getDashboardProfits({
       fromDate,
       toDate,
       status,
+      userId: userId ? Number(userId) : undefined,
     });
   }
 }

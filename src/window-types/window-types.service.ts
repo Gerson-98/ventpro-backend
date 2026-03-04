@@ -32,8 +32,14 @@ export class WindowTypesService {
   }
 
   findAll() {
-    // CAMBIO: window_types -> windowType
-    return this.prisma.windowType.findMany({ orderBy: { id: 'asc' } });
+    return this.prisma.windowType.findMany({
+      orderBy: { id: 'asc' },
+      include: {
+        pvcLinks: {
+          include: { pvcColor: true },
+        },
+      },
+    });
   }
 
   findOne(id: number) {
