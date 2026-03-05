@@ -258,7 +258,7 @@ export class QuotationsService {
       const toUpdate = (windows || []).filter((w) => !!w.id);
 
       // Helper para mapear los datos de una ventana
-      const mapWindowData = (win: (typeof windows)[0]) => {
+      const mapWindowData = (win: NonNullable<typeof windows>[number]) => {
         const widthInM = win.width_m || 0;
         const heightInM = win.height_m || 0;
         const quantity = win.quantity || 1;
