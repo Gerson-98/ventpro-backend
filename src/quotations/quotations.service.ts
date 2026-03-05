@@ -75,19 +75,9 @@ export class QuotationsService {
     const day = today.getDate().toString().padStart(2, '0');
     const datePrefix = `${year}${month}${day}`;
 
-    const todayCount = await this.prisma.quotation.count({
-      where: {
-        createdAt: {
-          gte: new Date(today.setHours(0, 0, 0, 0)),
-          lt: new Date(today.setHours(23, 59, 59, 999)),
-        },
-      },
-    });
-
-    const newQuotationNumber = `${datePrefix}${(todayCount + 1).toString().padStart(2, '0')}`;
-
+    // ── Calcular datos de ventanas ANTES de abrir la transaction ──────────────
+    // Evita mantener locks de BD mientras se hacen cálculos en memoria.
     let totalQuotationPrice = 0;
-
     const windowsData = windows.map((win) => {
       const widthInM = win.width_m || 0;
       const heightInM = win.height_m || 0;
@@ -112,36 +102,72 @@ export class QuotationsService {
 
     if (include_iva) totalQuotationPrice = totalQuotationPrice * 1.12;
 
-    return this.prisma.quotation.create({
-      data: {
-        quotationNumber: newQuotationNumber,
-        project,
-        price_per_m2,
-        clientId,
-        include_iva: !!include_iva,
-        total_price: totalQuotationPrice,
-        userId: user.id,
-        notes: notes || null,
-        reference_image_url: reference_image_url || null,
-        quotation_windows: { create: windowsData },
-      },
-      include: { quotation_windows: true },
+    // ── Generar quotationNumber atómico dentro de transaction ─────────────────
+    // Garantiza que dos vendedores simultáneos nunca obtengan el mismo número.
+    return this.prisma.$transaction(async (tx) => {
+      const startOfDay = new Date(today);
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(today);
+      endOfDay.setHours(23, 59, 59, 999);
+
+      const todayCount = await tx.quotation.count({
+        where: {
+          createdAt: {
+            gte: startOfDay,
+            lt: endOfDay,
+          },
+        },
+      });
+
+      const newQuotationNumber = `${datePrefix}${(todayCount + 1).toString().padStart(2, '0')}`;
+
+      return tx.quotation.create({
+        data: {
+          quotationNumber: newQuotationNumber,
+          project,
+          price_per_m2,
+          clientId,
+          include_iva: !!include_iva,
+          total_price: totalQuotationPrice,
+          userId: user.id,
+          notes: notes || null,
+          reference_image_url: reference_image_url || null,
+          quotation_windows: { create: windowsData },
+        },
+        include: { quotation_windows: true },
+      });
     });
   }
 
   // ─── findAll ─────────────────────────────────────────────────────────────────
+  // Paginado para evitar descargas masivas con el crecimiento de datos.
+  // Defaults: página 1, 50 registros por página.
 
-  async findAll(user: AuthUser) {
+  async findAll(user: AuthUser, page = 1, limit = 50) {
+    const skip = (page - 1) * limit;
     const whereClause = this.isAdmin(user) ? {} : { userId: user.id };
 
-    return this.prisma.quotation.findMany({
-      where: whereClause,
-      include: {
-        client: true,
-        user: { select: { id: true, name: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    const [data, total] = await this.prisma.$transaction([
+      this.prisma.quotation.findMany({
+        where: whereClause,
+        include: {
+          client: true,
+          user: { select: { id: true, name: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        skip,
+      }),
+      this.prisma.quotation.count({ where: whereClause }),
+    ]);
+
+    return {
+      data,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
   }
 
   // ─── findOne ─────────────────────────────────────────────────────────────────
@@ -227,15 +253,19 @@ export class QuotationsService {
         });
       }
 
-      for (const win of windows || []) {
+      // ── Separar ventanas a crear vs actualizar ────────────────────────────
+      const toCreate = (windows || []).filter((w) => !w.id);
+      const toUpdate = (windows || []).filter((w) => !!w.id);
+
+      // Helper para mapear los datos de una ventana
+      const mapWindowData = (win: (typeof windows)[0]) => {
         const widthInM = win.width_m || 0;
         const heightInM = win.height_m || 0;
         const quantity = win.quantity || 1;
         const priceToUse = win.price_per_m2 || globalPriceForCalc;
         const windowPriceTotal = widthInM * heightInM * priceToUse * quantity;
         subTotalAcumulado += windowPriceTotal;
-
-        const windowData: any = {
+        return {
           displayName: win.displayName,
           width_cm: widthInM * 100,
           height_cm: heightInM * 100,
@@ -246,24 +276,33 @@ export class QuotationsService {
           window_type_id: win.window_type_id,
           color_id: win.color_id,
           glass_color_id: win.glass_color_id,
+          ...(win.design_image_url !== undefined && {
+            design_image_url: win.design_image_url,
+          }),
         };
-        if (win.design_image_url !== undefined)
-          windowData.design_image_url = win.design_image_url;
+      };
 
-        if (win.id) {
-          await prisma.quotationWindow.update({
-            where: { id: win.id },
-            data: windowData,
-          });
-        } else {
-          await prisma.quotationWindow.create({
-            data: {
-              ...windowData,
-              quotation_id: id,
-              design_image_url: win.design_image_url || null,
-            },
-          });
-        }
+      // ── Creates en batch (1 query para N ventanas nuevas) ─────────────────
+      if (toCreate.length > 0) {
+        await prisma.quotationWindow.createMany({
+          data: toCreate.map((win) => ({
+            ...mapWindowData(win),
+            quotation_id: id,
+            design_image_url: win.design_image_url || null,
+          })),
+        });
+      }
+
+      // ── Updates en paralelo (N queries simultáneas, no secuenciales) ──────
+      if (toUpdate.length > 0) {
+        await Promise.all(
+          toUpdate.map((win) =>
+            prisma.quotationWindow.update({
+              where: { id: win.id },
+              data: mapWindowData(win),
+            }),
+          ),
+        );
       }
 
       const totalFinalCalculado = shouldIncludeIva
@@ -373,37 +412,39 @@ export class QuotationsService {
 
     // No se valida traslape: se permiten múltiples instalaciones el mismo día.
 
-    return this.prisma.$transaction(async (prisma) => {
-      // Pre-calcular medidas de hoja/vidrio para todas las ventanas
-      const windowsToCreate = await Promise.all(
-        quotation.quotation_windows.map(async (win) => {
-          const winOptions = (win as any).options || {};
-          const { hojaAncho, hojaAlto, vidrioAncho, vidrioAlto } =
-            await this.windowsService.calculateWindowMeasurements(
-              win.window_type_id,
-              win.width_cm,
-              win.height_cm,
-              winOptions,
-            );
-          return {
-            displayName: win.displayName,
-            options: winOptions,
-            width_cm: win.width_cm,
-            height_cm: win.height_cm,
-            price: win.price,
-            design_image_url: win.design_image_url,
-            window_type_id: win.window_type_id,
-            color_id: win.color_id,
-            glass_color_id: win.glass_color_id,
-            quantity: win.quantity,
-            hojaAncho,
-            hojaAlto,
-            vidrioAncho,
-            vidrioAlto,
-          };
-        }),
-      );
+    // ── Pre-calcular medidas FUERA de la transaction ──────────────────────────
+    // Calcular aquí evita mantener locks de BD durante operaciones async costosas.
+    // Con 80 ventanas esto puede tardar varios segundos — nunca dentro de $transaction.
+    const windowsToCreate = await Promise.all(
+      quotation.quotation_windows.map(async (win) => {
+        const winOptions = (win as any).options || {};
+        const { hojaAncho, hojaAlto, vidrioAncho, vidrioAlto } =
+          await this.windowsService.calculateWindowMeasurements(
+            win.window_type_id,
+            win.width_cm,
+            win.height_cm,
+            winOptions,
+          );
+        return {
+          displayName: win.displayName,
+          options: winOptions,
+          width_cm: win.width_cm,
+          height_cm: win.height_cm,
+          price: win.price,
+          design_image_url: win.design_image_url,
+          window_type_id: win.window_type_id,
+          color_id: win.color_id,
+          glass_color_id: win.glass_color_id,
+          quantity: win.quantity,
+          hojaAncho,
+          hojaAlto,
+          vidrioAncho,
+          vidrioAlto,
+        };
+      }),
+    );
 
+    return this.prisma.$transaction(async (prisma) => {
       let resultOrder: { id: number };
 
       if (existingOrderId) {

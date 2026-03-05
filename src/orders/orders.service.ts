@@ -57,7 +57,8 @@ export class OrdersService {
   // ─── findAll ──────────────────────────────────────────────────────────────
   // Admin: todos los pedidos
   // Vendedor: solo los pedidos generados desde sus cotizaciones
-  findAll(user: AuthUser) {
+  async findAll(user: AuthUser, page = 1, limit = 50) {
+    const skip = (page - 1) * limit;
     const whereClause = this.isAdmin(user)
       ? {}
       : {
@@ -66,19 +67,32 @@ export class OrdersService {
           },
         };
 
-    return this.prisma.order.findMany({
-      where: whereClause,
-      include: {
-        client: true,
-        _count: { select: { windows: true } },
-        generatedFromQuotation: {
-          select: {
-            user: { select: { id: true, name: true } },
+    const [data, total] = await this.prisma.$transaction([
+      this.prisma.order.findMany({
+        where: whereClause,
+        include: {
+          client: true,
+          _count: { select: { windows: true } },
+          generatedFromQuotation: {
+            select: {
+              user: { select: { id: true, name: true } },
+            },
           },
         },
-      },
-      orderBy: { id: 'desc' },
-    });
+        orderBy: { id: 'desc' },
+        take: limit,
+        skip,
+      }),
+      this.prisma.order.count({ where: whereClause }),
+    ]);
+
+    return {
+      data,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
   }
 
   // ─── findOne ──────────────────────────────────────────────────────────────

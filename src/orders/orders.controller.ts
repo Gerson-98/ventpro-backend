@@ -9,6 +9,7 @@ import {
   ParseIntPipe,
   UseGuards,
   Request,
+  Query,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { OrdersService } from './orders.service';
@@ -30,8 +31,12 @@ export class OrdersController {
   }
 
   @Get()
-  findAll(@Request() req) {
-    return this.ordersService.findAll(req.user);
+  findAll(
+    @Request() req,
+    @Query('page') page = '1',
+    @Query('limit') limit = '50',
+  ) {
+    return this.ordersService.findAll(req.user, +page, +limit);
   }
 
   @Get(':id')

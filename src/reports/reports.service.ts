@@ -7,6 +7,17 @@ import { CostCalculatorService } from '../cost-calculator/cost-calculator.servic
 
 type AccessoryRuleWithMaterial = AccessoryRule & { material: Material };
 
+// ── Tipo para Series de Máquina ───────────────────────────────────────────────
+// Cada serie = 1 ciclo de la cortadora con 3 ranuras (2 HOJA + 1 MOSQUITERO).
+// Las 3 barras reciben exactamente el mismo patrón de cortes.
+interface MachineSerie {
+  serieIndex: number;
+  cuts: { length: number; windowLabel: string }[];
+  totalUsed: number;
+  waste: number;
+  efficiency: number;
+}
+
 @Injectable()
 export class ReportsService {
   constructor(
@@ -759,26 +770,52 @@ export class ReportsService {
 
     for (const [key, value] of combinableCutList.entries()) {
       const [color, hojaProfileName, mosquiteroProfileName] = key.split('|');
-      const { combinedBins, hojaOnlyBins, mosquiteroOnlyBins } =
+      const { combinedBins, hojaOnlyBins, mosquiteroOnlyBins, machineSeries } =
         this.optimizeCombinedCutsLabeled(
           value.hojaCuts,
           value.mosquiteroCuts,
           BAR_LENGTH,
         );
 
-      // ⚡ Barras combinadas: hoja + cedazo con el mismo largo → máquina corta en paralelo
       const combinedName = `${hojaProfileName} + ${mosquiteroProfileName}`;
-      if (combinedBins.length > 0)
-        this.formatAndAddResultLabeled(
-          optimizationResult,
-          combinedName,
-          color,
-          combinedBins,
-          BAR_LENGTH,
-        );
 
-      // ✂ Sobrantes de hoja sin par de cedazo → se usan sufijo para evitar colisión
-      // con entradas de individualCutList que puedan usar el mismo perfil
+      if (machineSeries !== null && machineSeries.length > 0) {
+        // ── Modo Series de Máquina ────────────────────────────────────────────
+        // Las piezas de HOJA y MOSQUITERO son idénticas en longitud.
+        // Cada serie = 1 ciclo de máquina con 3 barras (2 HOJA + 1 MOSQUITERO).
+        // Total barras contabilizadas = series × 3 (2 HOJA + 1 MOSQUITERO).
+        if (!optimizationResult[combinedName])
+          optimizationResult[combinedName] = [];
+        optimizationResult[combinedName].push({
+          color,
+          // totalBars = N series × 3 barras físicas (para el resumen global)
+          totalBars: machineSeries.length * 3,
+          // machineSeries: true indica al frontend que use el modo de series
+          machineSeries: true,
+          // Desglose para el footer del bloque
+          totalHojaBars: machineSeries.length * 2,
+          totalCedazoBars: machineSeries.length * 1,
+          // Las series en sí — cada una con sus cortes (sin tag |HOJA o |CEDAZO)
+          series: machineSeries,
+          // Campo bars vacío — no se usa en modo serie, pero mantiene compatibilidad
+          // con el modal en caso de recibir un frontend antiguo que lo espere
+          bars: [],
+        });
+      } else {
+        // ── Fallback: modo antiguo de barras combinadas ───────────────────────
+        // Las piezas difieren entre HOJA y MOSQUITERO (overrides de reglas).
+        // Se usa el emparejamiento por largo original.
+        if (combinedBins.length > 0)
+          this.formatAndAddResultLabeled(
+            optimizationResult,
+            combinedName,
+            color,
+            combinedBins,
+            BAR_LENGTH,
+          );
+      }
+
+      // ✂ Sobrantes independientes (iguales en ambos modos)
       if (hojaOnlyBins.length > 0)
         this.formatAndAddResultLabeled(
           optimizationResult,
@@ -787,8 +824,6 @@ export class ReportsService {
           hojaOnlyBins,
           BAR_LENGTH,
         );
-
-      // ✂ Sobrantes de cedazo sin par de hoja (caso raro pero posible)
       if (mosquiteroOnlyBins.length > 0)
         this.formatAndAddResultLabeled(
           optimizationResult,
@@ -872,6 +907,27 @@ export class ReportsService {
     return bins.map((b) => b.cuts);
   }
 
+  // ── Algoritmo de Series de Máquina ──────────────────────────────────────────
+  // La cortadora carga 3 perfiles simultáneamente en un solo ciclo:
+  //   Ranura 1 → barra de HOJA
+  //   Ranura 2 → barra de HOJA
+  //   Ranura 3 → barra de CEDAZO / MOSQUITERO
+  //
+  // Las 3 barras reciben EXACTAMENTE los mismos cortes en el mismo ciclo.
+  // Por eso el plan de corte se organiza en "series": cada serie = 1 ciclo de máquina
+  // con las 3 ranuras mostrando el mismo patrón de cortes.
+  //
+  // Fundamento: para ventana corrediza, HOJA y MOSQUITERO usan las mismas dimensiones
+  // (hojaAncho / hojaAlto), por lo que sus piezas son idénticas en longitud.
+  // Solo difieren en el nombre del perfil (material físico diferente, mismo largo).
+  //
+  // Algoritmo:
+  //   1. Verificar que los largos de hojaCuts y mosquiteroCuts son equivalentes.
+  //      Si no → fallback al modo antiguo para no perder exactitud.
+  //   2. Usar SOLO los hojaCuts (sin tag) para correr FFD → N bins.
+  //   3. Cada bin = 1 serie (3 filas con mismo patrón: HOJA, HOJA, MOSQUITERO).
+  //   4. Calcular sobrantes: si hay piezas de hoja sin correspondencia en mosquitero
+  //      (o viceversa) → tratarlas con FFD individual como antes.
   private optimizeCombinedCutsLabeled(
     hojaCuts: { length: number; windowLabel: string }[],
     mosquiteroCuts: { length: number; windowLabel: string }[],
@@ -880,12 +936,71 @@ export class ReportsService {
     combinedBins: { length: number; windowLabel: string }[][];
     hojaOnlyBins: { length: number; windowLabel: string }[][];
     mosquiteroOnlyBins: { length: number; windowLabel: string }[][];
+    // Nuevo: cuando las piezas son idénticas se produce el formato "series de máquina"
+    machineSeries: MachineSerie[] | null;
   } {
-    // ── Lógica de emparejamiento por largo ─────────────────────────────────
-    // La máquina corta hoja + cedazo en paralelo SOLO cuando tienen el mismo
-    // largo de corte. Emparejamos primero, luego FFD a cada grupo por separado.
+    // ── Paso 1: Verificar si los largos son equivalentes (modo serie posible) ──
+    // Contamos frecuencias por largo en ambas listas y las comparamos.
+    const hojaFreq = new Map<number, number>();
+    for (const c of hojaCuts)
+      hojaFreq.set(c.length, (hojaFreq.get(c.length) ?? 0) + 1);
 
-    // 1. Contar disponibilidad por largo para cada perfil
+    const mosquiteroFreq = new Map<number, number>();
+    for (const c of mosquiteroCuts)
+      mosquiteroFreq.set(c.length, (mosquiteroFreq.get(c.length) ?? 0) + 1);
+
+    // Verificar que las frecuencias son iguales → mismas piezas en ambos perfiles
+    let canUseMachineSeries = hojaFreq.size === mosquiteroFreq.size;
+    if (canUseMachineSeries) {
+      for (const [len, count] of hojaFreq.entries()) {
+        if (mosquiteroFreq.get(len) !== count) {
+          canUseMachineSeries = false;
+          break;
+        }
+      }
+    }
+
+    if (canUseMachineSeries && hojaCuts.length > 0) {
+      // ── Modo Series de Máquina ──────────────────────────────────────────────
+      // Los cortes son idénticos en HOJA y MOSQUITERO.
+      // Corremos FFD SOLO con los hojaCuts (sin el tag |HOJA) y producimos N bins.
+      // Cada bin = 1 serie → 3 barras en la máquina (2 HOJA + 1 MOSQUITERO).
+
+      // Limpiar el tag |HOJA del windowLabel para que la serie sea legible
+      const cleanedHojaCuts = hojaCuts.map((c) => ({
+        ...c,
+        windowLabel: c.windowLabel
+          .replace(/\|HOJA$/, '')
+          .replace(/\|CEDAZO$/, ''),
+      }));
+
+      const bins = this.optimizeCutsLabeled(cleanedHojaCuts, barLength);
+
+      const series: MachineSerie[] = bins.map((bin, idx) => {
+        const totalUsed = bin.reduce((s, c) => s + c.length, 0);
+        const waste = Number((barLength - totalUsed).toFixed(1));
+        return {
+          serieIndex: idx + 1,
+          cuts: [...bin].sort((a, b) => b.length - a.length),
+          totalUsed: Number(totalUsed.toFixed(1)),
+          waste,
+          efficiency: Number(((totalUsed / barLength) * 100).toFixed(2)),
+        };
+      });
+
+      // No hay sobrantes cuando los largos son idénticos
+      return {
+        combinedBins: [],
+        hojaOnlyBins: [],
+        mosquiteroOnlyBins: [],
+        machineSeries: series,
+      };
+    }
+
+    // ── Fallback: modo antiguo de emparejamiento por largo ──────────────────
+    // Se usa cuando HOJA y MOSQUITERO tienen piezas de distinto largo
+    // (ventanas con overrides de reglas que diferencian los perfiles).
+
     const hojaByLength = new Map<
       number,
       { length: number; windowLabel: string }[]
@@ -904,7 +1019,6 @@ export class ReportsService {
       mosquiteroByLength.get(cut.length)!.push(cut);
     }
 
-    // 2. Emparejar cortes del mismo largo — cada par va a barras combinadas
     const pairedCuts: { length: number; windowLabel: string }[] = [];
     const hojaLeftover: { length: number; windowLabel: string }[] = [];
     const mosquiteroLeftover: { length: number; windowLabel: string }[] = [];
@@ -912,43 +1026,35 @@ export class ReportsService {
     for (const [length, hojaGroup] of hojaByLength.entries()) {
       const mosquiteroGroup = mosquiteroByLength.get(length) ?? [];
       const pairCount = Math.min(hojaGroup.length, mosquiteroGroup.length);
-
-      // Los pares van al pool combinado (hoja + cedazo del mismo largo juntos)
       for (let i = 0; i < pairCount; i++) {
         pairedCuts.push(hojaGroup[i]);
         pairedCuts.push(mosquiteroGroup[i]);
       }
-      // Sobrantes de hoja sin par
-      for (let i = pairCount; i < hojaGroup.length; i++) {
+      for (let i = pairCount; i < hojaGroup.length; i++)
         hojaLeftover.push(hojaGroup[i]);
-      }
-      // Sobrantes de cedazo sin par
-      for (let i = pairCount; i < mosquiteroGroup.length; i++) {
+      for (let i = pairCount; i < mosquiteroGroup.length; i++)
         mosquiteroLeftover.push(mosquiteroGroup[i]);
-      }
     }
-    // Cedazo que no tiene ningún largo correspondiente en hoja
     for (const [length, mosquiteroGroup] of mosquiteroByLength.entries()) {
-      if (!hojaByLength.has(length)) {
+      if (!hojaByLength.has(length))
         mosquiteroLeftover.push(...mosquiteroGroup);
-      }
     }
 
-    // 3. FFD independiente para cada grupo
-    const combinedBins =
-      pairedCuts.length > 0
-        ? this.optimizeCutsLabeled(pairedCuts, barLength)
-        : [];
-    const hojaOnlyBins =
-      hojaLeftover.length > 0
-        ? this.optimizeCutsLabeled(hojaLeftover, barLength)
-        : [];
-    const mosquiteroOnlyBins =
-      mosquiteroLeftover.length > 0
-        ? this.optimizeCutsLabeled(mosquiteroLeftover, barLength)
-        : [];
-
-    return { combinedBins, hojaOnlyBins, mosquiteroOnlyBins };
+    return {
+      combinedBins:
+        pairedCuts.length > 0
+          ? this.optimizeCutsLabeled(pairedCuts, barLength)
+          : [],
+      hojaOnlyBins:
+        hojaLeftover.length > 0
+          ? this.optimizeCutsLabeled(hojaLeftover, barLength)
+          : [],
+      mosquiteroOnlyBins:
+        mosquiteroLeftover.length > 0
+          ? this.optimizeCutsLabeled(mosquiteroLeftover, barLength)
+          : [],
+      machineSeries: null, // fallback: no hay series de máquina
+    };
   }
 
   private formatAndAddResultLabeled(
