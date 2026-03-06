@@ -94,9 +94,14 @@ export class ReportsService {
       rulesByWindowType.get(rule.window_type_id)!.push(rule);
     });
 
-    const profilesReportMap = new Map<string, any>();
+    const profilesReportMap = new Map<
+      string,
+      { material: any; pvcColor: string; cuts: number[] }
+    >();
     const accessoriesReportMap = new Map<string, any>();
     const glassReportMap = new Map<string, any>();
+
+    const BAR_LENGTH_REPORT = 580;
 
     for (const window of enrichedWindows) {
       if (!window || !window.windowType || !window.pvcColor) continue;
@@ -217,21 +222,30 @@ export class ReportsService {
         }
       }
 
-      // 2. PERFILES
+      // 2. PERFILES — acumular piezas individuales (no metros lineales)
+      //    para que el conteo de barras use bin-packing real (FFD),
+      //    idéntico al optimizador de corte.
       for (const profile of dynamicProfiles) {
         if (profile.material && profile.rule) {
-          const requiredLength = this.costCalculator.applyRule(
+          const individualCuts = this.getCutsWithDimension(
             profile.rule,
             profile.ancho,
             profile.alto,
           );
+          if (individualCuts.length === 0) continue;
+
           const key = `${window.pvcColor.name}|${profile.material.name}`;
           const existing = profilesReportMap.get(key) || {
             material: profile.material,
             pvcColor: window.pvcColor.name,
-            totalLength: 0,
+            cuts: [],
           };
-          existing.totalLength += requiredLength * windowQuantity;
+          // Agregar cada pieza × cantidad de ventanas
+          for (let q = 0; q < windowQuantity; q++) {
+            for (const cut of individualCuts) {
+              existing.cuts.push(Number(cut.length.toFixed(1)));
+            }
+          }
           profilesReportMap.set(key, existing);
         }
       }
@@ -245,10 +259,12 @@ export class ReportsService {
           if (duelaMaterial) {
             const stripsNeeded = Math.ceil(vidrioAlto / 15);
             const totalDuelaLength = stripsNeeded * vidrioAncho;
-            const key = `${window.pvcColor.name}|${duelaMaterial.name}`;
+            const key = `DUELA|${window.pvcColor.name}|${duelaMaterial.name}`;
             const existing = profilesReportMap.get(key) || {
               material: duelaMaterial,
               pvcColor: window.pvcColor.name,
+              cuts: [],
+              isDuela: true,
               totalLength: 0,
             };
             existing.totalLength += totalDuelaLength * windowQuantity;
@@ -278,7 +294,10 @@ export class ReportsService {
         const price = isWhite
           ? item.material.price_white
           : item.material.price_color;
-        const barras = Math.ceil(item.totalLength / 580);
+        // DUELA usa totalLength (material continuo), otros perfiles usan bin-packing FFD
+        const barras = item.isDuela
+          ? Math.ceil(item.totalLength / BAR_LENGTH_REPORT)
+          : this.optimizeCuts(item.cuts, BAR_LENGTH_REPORT).length;
         return {
           tipo: 'PERFIL',
           nombre: item.material.name,
