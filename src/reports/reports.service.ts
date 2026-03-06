@@ -941,6 +941,14 @@ export class ReportsService {
   } {
     // ── Paso 1: Verificar si los largos son equivalentes (modo serie posible) ──
     // Contamos frecuencias por largo en ambas listas y las comparamos.
+    // CASO NORMAL: HOJA y MOSQUITERO tienen el mismo número de piezas.
+    // CASO DOBLE: la regla HOJA usa N=4 (2A+2H duplicados) mientras MOSQUITERO usa N=2 (2A+2H).
+    //   En ese caso hojaCuts tiene exactamente el doble de piezas que mosquiteroCuts,
+    //   pero las DIMENSIONES son idénticas. La máquina igual puede cortar 2 HOJA + 1 MOSQUITERO
+    //   por ciclo — simplemente cada barra HOJA usa la mitad de los cortes de la lista.
+    //   Solución: si hoja tiene exactamente 2× piezas, tomar 1 de cada 2 (deduplicar) antes
+    //   de comparar y antes del FFD, produciendo los mismos N bins que con MOSQUITERO.
+
     const hojaFreq = new Map<number, number>();
     for (const c of hojaCuts)
       hojaFreq.set(c.length, (hojaFreq.get(c.length) ?? 0) + 1);
@@ -949,10 +957,39 @@ export class ReportsService {
     for (const c of mosquiteroCuts)
       mosquiteroFreq.set(c.length, (mosquiteroFreq.get(c.length) ?? 0) + 1);
 
+    // Detectar si HOJA tiene exactamente el doble de piezas que MOSQUITERO
+    // con las mismas dimensiones (ratio 2:1 en todas las frecuencias)
+    let hojaIsDouble = false;
+    if (
+      hojaCuts.length === mosquiteroCuts.length * 2 &&
+      hojaFreq.size === mosquiteroFreq.size
+    ) {
+      hojaIsDouble = true;
+      for (const [len, mCount] of mosquiteroFreq.entries()) {
+        if (hojaFreq.get(len) !== mCount * 2) {
+          hojaIsDouble = false;
+          break;
+        }
+      }
+    }
+
+    // Si hoja es doble, normalizar tomando 1 de cada 2 piezas (mantiene windowLabels)
+    const effectiveHojaCuts = hojaIsDouble
+      ? hojaCuts.filter((_, i) => i % 2 === 0)
+      : hojaCuts;
+
+    // Recalcular frecuencias con la lista efectiva
+    const effectiveHojaFreq = new Map<number, number>();
+    for (const c of effectiveHojaCuts)
+      effectiveHojaFreq.set(
+        c.length,
+        (effectiveHojaFreq.get(c.length) ?? 0) + 1,
+      );
+
     // Verificar que las frecuencias son iguales → mismas piezas en ambos perfiles
-    let canUseMachineSeries = hojaFreq.size === mosquiteroFreq.size;
+    let canUseMachineSeries = effectiveHojaFreq.size === mosquiteroFreq.size;
     if (canUseMachineSeries) {
-      for (const [len, count] of hojaFreq.entries()) {
+      for (const [len, count] of effectiveHojaFreq.entries()) {
         if (mosquiteroFreq.get(len) !== count) {
           canUseMachineSeries = false;
           break;
@@ -960,14 +997,15 @@ export class ReportsService {
       }
     }
 
-    if (canUseMachineSeries && hojaCuts.length > 0) {
+    if (canUseMachineSeries && effectiveHojaCuts.length > 0) {
       // ── Modo Series de Máquina ──────────────────────────────────────────────
-      // Los cortes son idénticos en HOJA y MOSQUITERO.
-      // Corremos FFD SOLO con los hojaCuts (sin el tag |HOJA) y producimos N bins.
+      // Los cortes son idénticos en HOJA (efectiva) y MOSQUITERO.
+      // Corremos FFD SOLO con effectiveHojaCuts y producimos N bins.
       // Cada bin = 1 serie → 3 barras en la máquina (2 HOJA + 1 MOSQUITERO).
+      // totalHojaBars = N bins × 2 (porque la barra HOJA se carga dos veces por ciclo).
 
       // Limpiar el tag |HOJA del windowLabel para que la serie sea legible
-      const cleanedHojaCuts = hojaCuts.map((c) => ({
+      const cleanedHojaCuts = effectiveHojaCuts.map((c) => ({
         ...c,
         windowLabel: c.windowLabel
           .replace(/\|HOJA$/, '')
