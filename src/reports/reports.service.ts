@@ -94,10 +94,18 @@ export class ReportsService {
       rulesByWindowType.get(rule.window_type_id)!.push(rule);
     });
 
-    const profilesReportMap = new Map<
-      string,
-      { material: any; pvcColor: string; cuts: number[] }
-    >();
+    // ── Tipo para acumular piezas individuales por perfil ───────────────────
+    // Los perfiles de corte acumulan piezas físicas (cuts[]) y se cuentan
+    // con bin-packing FFD — igual que el optimizador de corte.
+    // DUELA es un caso especial: material continuo que usa totalLength.
+    interface ProfileAccum {
+      material: any;
+      pvcColor: string;
+      cuts: number[];
+      totalLength: number; // solo usado por DUELA
+      isDuela: boolean;
+    }
+    const profilesReportMap = new Map<string, ProfileAccum>();
     const accessoriesReportMap = new Map<string, any>();
     const glassReportMap = new Map<string, any>();
 
@@ -235,18 +243,22 @@ export class ReportsService {
           if (individualCuts.length === 0) continue;
 
           const key = `${window.pvcColor.name}|${profile.material.name}`;
-          const existing = profilesReportMap.get(key) || {
-            material: profile.material,
-            pvcColor: window.pvcColor.name,
-            cuts: [],
-          };
+          if (!profilesReportMap.has(key)) {
+            profilesReportMap.set(key, {
+              material: profile.material,
+              pvcColor: window.pvcColor.name,
+              cuts: [],
+              totalLength: 0,
+              isDuela: false,
+            });
+          }
+          const existing = profilesReportMap.get(key)!;
           // Agregar cada pieza × cantidad de ventanas
           for (let q = 0; q < windowQuantity; q++) {
             for (const cut of individualCuts) {
               existing.cuts.push(Number(cut.length.toFixed(1)));
             }
           }
-          profilesReportMap.set(key, existing);
         }
       }
 
@@ -259,16 +271,18 @@ export class ReportsService {
           if (duelaMaterial) {
             const stripsNeeded = Math.ceil(vidrioAlto / 15);
             const totalDuelaLength = stripsNeeded * vidrioAncho;
-            const key = `DUELA|${window.pvcColor.name}|${duelaMaterial.name}`;
-            const existing = profilesReportMap.get(key) || {
-              material: duelaMaterial,
-              pvcColor: window.pvcColor.name,
-              cuts: [],
-              isDuela: true,
-              totalLength: 0,
-            };
-            existing.totalLength += totalDuelaLength * windowQuantity;
-            profilesReportMap.set(key, existing);
+            const key = `${window.pvcColor.name}|${duelaMaterial.name}`;
+            if (!profilesReportMap.has(key)) {
+              profilesReportMap.set(key, {
+                material: duelaMaterial,
+                pvcColor: window.pvcColor.name,
+                cuts: [],
+                totalLength: 0,
+                isDuela: true,
+              });
+            }
+            profilesReportMap.get(key)!.totalLength +=
+              totalDuelaLength * windowQuantity;
           }
         } else if (glassNameUpper !== 'VIDRIO Y DUELA') {
           const glassMaterial = materialsMap.get(window.glassColor.name);
@@ -294,7 +308,8 @@ export class ReportsService {
         const price = isWhite
           ? item.material.price_white
           : item.material.price_color;
-        // DUELA usa totalLength (material continuo), otros perfiles usan bin-packing FFD
+        // DUELA usa totalLength (material continuo sin piezas individuales)
+        // Todos los demás perfiles usan bin-packing FFD (mismo algoritmo que el optimizador)
         const barras = item.isDuela
           ? Math.ceil(item.totalLength / BAR_LENGTH_REPORT)
           : this.optimizeCuts(item.cuts, BAR_LENGTH_REPORT).length;
