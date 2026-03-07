@@ -35,6 +35,12 @@ export class ReportsController {
     return this.reportsService.generateCutOptimizationReport(orderId);
   }
 
+  // ─── NUEVO: Optimización de corte de vidrio ─────────────────────────────────
+  @Get('order/:orderId/glass-cuts')
+  generateGlassCutReport(@Param('orderId', ParseIntPipe) orderId: number) {
+    return this.reportsService.generateGlassCutReport(orderId);
+  }
+
   // ─── NUEVO: Resumen financiero de un pedido específico ──────────────────
   @Get('order/:orderId/financial')
   getOrderFinancialSummary(@Param('orderId', ParseIntPipe) orderId: number) {

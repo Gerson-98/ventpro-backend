@@ -597,6 +597,101 @@ export class ReportsService {
     return this.generateCutOptimization(order.windows);
   }
 
+  // ── Optimización de corte de VIDRIO ──────────────────────────────────────────
+  // Lista las piezas de vidrio que se necesitan cortar, agrupadas por tipo de vidrio.
+  // Cada pieza tiene ancho × alto y la etiqueta de la ventana a la que pertenece.
+  async generateGlassCutReport(orderId: number) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        windows: {
+          include: { windowType: true, pvcColor: true, glassColor: true },
+        },
+      },
+    });
+    if (!order) throw new NotFoundException(`Pedido #${orderId} no encontrado`);
+
+    const enrichedWindows = await this.enrichWindowMeasures(order.windows);
+    const catalogMap = new Map(
+      (await this.prisma.catalogoPerfiles.findMany()).map((p) => [
+        p.window_type_id,
+        p,
+      ]),
+    );
+
+    const PLANCHA_WIDTH = 213; // cm (ancho estándar plancha de vidrio)
+    const PLANCHA_HEIGHT = 165.8; // cm (alto estándar plancha de vidrio)
+
+    interface GlassPiece {
+      width: number;
+      height: number;
+      windowLabel: string;
+      quantity: number;
+    }
+
+    const glassByType = new Map<
+      string,
+      { glassName: string; pieces: GlassPiece[] }
+    >();
+
+    for (let wi = 0; wi < enrichedWindows.length; wi++) {
+      const window = enrichedWindows[wi];
+      if (!window || !window.glassColor) continue;
+
+      const glassName = window.glassColor.name;
+      if (glassName.toUpperCase().includes('DUELA')) continue;
+
+      const catalogEntry = catalogMap.get(window.window_type_id);
+      const options = (window.options as any) || {};
+      const reglas = catalogEntry
+        ? this.costCalculator.aplicarRuleOverrides(catalogEntry, options)
+        : null;
+      const cantVidrios =
+        reglas?.cant_vidrios ?? catalogEntry?.cant_vidrios ?? 1;
+
+      const vidrioAncho = window.vidrioAncho ?? window.width_cm;
+      const vidrioAlto = window.vidrioAlto ?? window.height_cm;
+      if (vidrioAncho <= 0 || vidrioAlto <= 0) continue;
+
+      const windowLabel = `V${wi + 1}`;
+      const windowQuantity = window.quantity || 1;
+
+      const key = glassName;
+      if (!glassByType.has(key)) {
+        glassByType.set(key, { glassName, pieces: [] });
+      }
+      glassByType.get(key)!.pieces.push({
+        width: Number(vidrioAncho.toFixed(1)),
+        height: Number(vidrioAlto.toFixed(1)),
+        windowLabel,
+        quantity: cantVidrios * windowQuantity,
+      });
+    }
+
+    // Para cada tipo de vidrio, calcular cuántas planchas se necesitan
+    const result: any = {};
+    for (const [key, value] of glassByType.entries()) {
+      const totalPieces = value.pieces.reduce((s, p) => s + p.quantity, 0);
+      const totalArea = value.pieces.reduce(
+        (s, p) => s + p.width * p.height * p.quantity,
+        0,
+      );
+      const planchaArea = PLANCHA_WIDTH * PLANCHA_HEIGHT;
+      const minPlanchas = Math.ceil(totalArea / planchaArea);
+
+      result[key] = {
+        glassName: value.glassName,
+        planchaSize: `${PLANCHA_WIDTH} × ${PLANCHA_HEIGHT} cm`,
+        pieces: value.pieces,
+        totalPieces,
+        totalArea: Number(totalArea.toFixed(1)),
+        minPlanchas,
+      };
+    }
+
+    return result;
+  }
+
   private async generateCutOptimization(windows: any[]) {
     const enrichedWindows = await this.enrichWindowMeasures(windows);
 
