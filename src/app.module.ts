@@ -27,6 +27,7 @@ import { OptionGroupsModule } from './option-groups/option-groups.module';
 import { OptionValuesModule } from './option-values/option-values.module';
 import { WindowTypeOptionsModule } from './window-type-options/window-type-options.module';
 import { ChecklistsModule } from './checklists/checklists.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -63,6 +64,7 @@ import { ChecklistsModule } from './checklists/checklists.module';
     OptionValuesModule,
     WindowTypeOptionsModule,
     ChecklistsModule,
+    DashboardModule,
   ],
   controllers: [AppController, UploadsController],
   providers: [
