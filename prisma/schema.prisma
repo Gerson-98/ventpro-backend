@@ -299,6 +299,8 @@ model Quotation {
   userId              Int?
   user                User?           @relation(fields: [userId], references: [id])
 
+  @@index([status])
+  @@index([clientId])
   @@map("Quotation")
 }
 
@@ -321,6 +323,7 @@ model QuotationWindow {
   pvcColor         PvcColor   @relation(fields: [color_id], references: [id])
   glassColor       GlassColor @relation(fields: [glass_color_id], references: [id])
 
+  @@index([quotation_id])
   @@map("QuotationWindow")
 }
 
@@ -345,6 +348,8 @@ model Order {
   windows                  Window[]
   checklists               Checklist[]
 
+  @@index([status])
+  @@index([clientId])
   @@map("orders")
 }
 
@@ -372,6 +377,7 @@ model Window {
   order            Order?      @relation(fields: [order_id], references: [id])
   windowType       WindowType? @relation(fields: [window_type_id], references: [id])
 
+  @@index([order_id])
   @@map("windows")
 }
 

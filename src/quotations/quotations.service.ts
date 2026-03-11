@@ -413,36 +413,87 @@ export class QuotationsService {
     // No se valida traslape: se permiten múltiples instalaciones el mismo día.
 
     // ── Pre-calcular medidas FUERA de la transaction ──────────────────────────
-    // Calcular aquí evita mantener locks de BD durante operaciones async costosas.
-    // Con 80 ventanas esto puede tardar varios segundos — nunca dentro de $transaction.
-    const windowsToCreate = await Promise.all(
-      quotation.quotation_windows.map(async (win) => {
-        const winOptions = (win as any).options || {};
-        const { hojaAncho, hojaAlto, vidrioAncho, vidrioAlto } =
-          await this.windowsService.calculateWindowMeasurements(
-            win.window_type_id,
-            win.width_cm,
-            win.height_cm,
-            winOptions,
+    // UN solo query para todos los cálculos (elimina N+1).
+    const typeIds = [
+      ...new Set(quotation.quotation_windows.map((w) => w.window_type_id)),
+    ];
+    const calculations = await this.prisma.windowCalculation.findMany({
+      where: { window_type_id: { in: typeIds } },
+    });
+    const calcMap = new Map(calculations.map((c) => [c.window_type_id, c]));
+
+    const windowsToCreate = quotation.quotation_windows.map((win) => {
+      const winOptions = (win as any).options || {};
+      const calcParams = calcMap.get(win.window_type_id);
+
+      let hojaAncho: number;
+      let hojaAlto: number;
+      let vidrioAncho: number;
+      let vidrioAlto: number;
+
+      if (!calcParams) {
+        // Sin fórmula de cálculo → dimensiones sin transformar
+        hojaAncho = win.width_cm;
+        hojaAlto = win.height_cm;
+        vidrioAncho = win.width_cm;
+        vidrioAlto = win.height_cm;
+      } else {
+        let hojaMargen = calcParams.hojaMargen;
+        let hojaDescuento = calcParams.hojaDescuento;
+        let vidrioDescuento = calcParams.vidrioDescuento;
+        let hojaDivision = calcParams.hojaDivision;
+
+        if (winOptions && calcParams.calculationOverrides) {
+          const overrides = calcParams.calculationOverrides as any;
+          const optionKey = Object.keys(winOptions).find(
+            (key) => overrides[winOptions[key]],
           );
-        return {
-          displayName: win.displayName,
-          options: winOptions,
-          width_cm: win.width_cm,
-          height_cm: win.height_cm,
-          price: win.price,
-          design_image_url: win.design_image_url,
-          window_type_id: win.window_type_id,
-          color_id: win.color_id,
-          glass_color_id: win.glass_color_id,
-          quantity: win.quantity,
-          hojaAncho,
-          hojaAlto,
-          vidrioAncho,
-          vidrioAlto,
-        };
-      }),
-    );
+          if (optionKey) {
+            const overrideRules = overrides[winOptions[optionKey]];
+            hojaMargen = overrideRules.hojaMargen ?? hojaMargen;
+            hojaDescuento = overrideRules.hojaDescuento ?? hojaDescuento;
+            vidrioDescuento = overrideRules.vidrioDescuento ?? vidrioDescuento;
+            hojaDivision = overrideRules.hojaDivision ?? hojaDivision;
+          }
+        }
+
+        switch (hojaDivision) {
+          case 'Mitad':
+            hojaAncho = (win.width_cm + hojaMargen) / 2;
+            break;
+          case 'Tercios':
+            hojaAncho = (win.width_cm + hojaMargen) / 3;
+            break;
+          case 'Cuartos':
+            hojaAncho = (win.width_cm + hojaMargen) / 4;
+            break;
+          default:
+            hojaAncho = win.width_cm + hojaMargen;
+            break;
+        }
+
+        hojaAlto = win.height_cm - hojaDescuento;
+        vidrioAncho = hojaAncho - vidrioDescuento;
+        vidrioAlto = hojaAlto - vidrioDescuento;
+      }
+
+      return {
+        displayName: win.displayName,
+        options: winOptions,
+        width_cm: win.width_cm,
+        height_cm: win.height_cm,
+        price: win.price,
+        design_image_url: win.design_image_url,
+        window_type_id: win.window_type_id,
+        color_id: win.color_id,
+        glass_color_id: win.glass_color_id,
+        quantity: win.quantity,
+        hojaAncho: Number(hojaAncho.toFixed(1)),
+        hojaAlto: Number(hojaAlto.toFixed(1)),
+        vidrioAncho: Number(vidrioAncho.toFixed(1)),
+        vidrioAlto: Number(vidrioAlto.toFixed(1)),
+      };
+    });
 
     return this.prisma.$transaction(async (prisma) => {
       let resultOrder: { id: number };

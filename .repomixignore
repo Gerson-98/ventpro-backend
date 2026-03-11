@@ -1,0 +1,40 @@
+# Dependencias y Builds
+node_modules/
+dist/
+build/
+.next/
+out/
+
+# Archivos de bloqueo (consumen muchísimos tokens y no ayudan a la lógica)
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Variables de entorno y secretos (SEGURIDAD)
+.env
+.env.*
+!.env.example
+secrets.json
+
+# Git y editores
+.git/
+.vscode/
+.idea/
+.DS_Store
+*.log
+
+# Assets y binarios (La IA no puede "leer" una imagen o un PDF)
+public/
+src/assets/
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.ico
+*.pdf
+*.zip
+
+# Documentación interna pesada
+docs/
+README.md (opcional, si es muy largo)

@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { APP_GUARD } from '@nestjs/core';
 
 import { OrdersModule } from './orders/orders.module';
 import { WindowsModule } from './windows/windows.module';
@@ -28,7 +30,9 @@ import { ChecklistsModule } from './checklists/checklists.module';
 
 @Module({
   imports: [
-    OrdersModule, // ✅ Incluye el módulo de pedidos
+    // ✅ Rate limiting: máximo 5 requests por minuto por IP
+    ThrottlerModule.forRoot([{ ttl: 60000, limit: 5 }]),
+    OrdersModule,
     WindowsModule,
     WindowTypesModule,
     PvcColorsModule,
@@ -50,6 +54,14 @@ import { ChecklistsModule } from './checklists/checklists.module';
     ChecklistsModule,
   ],
   controllers: [AppController, UploadsController],
-  providers: [AppService, PrismaService],
+  providers: [
+    AppService,
+    PrismaService,
+    // ✅ Aplica rate limiting globalmente a todos los endpoints
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
+  ],
 })
 export class AppModule {}
