@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  ConflictException,
 } from '@nestjs/common';
 import {
   CreateQuotationDto,
@@ -104,39 +105,51 @@ export class QuotationsService {
 
     // ── Generar quotationNumber atómico dentro de transaction ─────────────────
     // Garantiza que dos vendedores simultáneos nunca obtengan el mismo número.
-    return this.prisma.$transaction(async (tx) => {
-      const startOfDay = new Date(today);
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date(today);
-      endOfDay.setHours(23, 59, 59, 999);
+    try {
+      const result = await this.prisma.$transaction(async (tx) => {
+        const startOfDay = new Date(today);
+        startOfDay.setHours(0, 0, 0, 0);
+        const endOfDay = new Date(today);
+        endOfDay.setHours(23, 59, 59, 999);
 
-      const todayCount = await tx.quotation.count({
-        where: {
-          createdAt: {
-            gte: startOfDay,
-            lt: endOfDay,
+        const todayCount = await tx.quotation.count({
+          where: {
+            createdAt: {
+              gte: startOfDay,
+              lt: endOfDay,
+            },
           },
-        },
-      });
+        });
 
-      const newQuotationNumber = `${datePrefix}${(todayCount + 1).toString().padStart(2, '0')}`;
+        const newQuotationNumber = `${datePrefix}${(todayCount + 1).toString().padStart(2, '0')}`;
 
-      return tx.quotation.create({
-        data: {
-          quotationNumber: newQuotationNumber,
-          project,
-          price_per_m2,
-          clientId,
-          include_iva: !!include_iva,
-          total_price: totalQuotationPrice,
-          userId: user.id,
-          notes: notes || null,
-          reference_image_url: reference_image_url || null,
-          quotation_windows: { create: windowsData },
-        },
-        include: { quotation_windows: true },
+        return tx.quotation.create({
+          data: {
+            quotationNumber: newQuotationNumber,
+            project,
+            price_per_m2,
+            clientId,
+            include_iva: !!include_iva,
+            total_price: totalQuotationPrice,
+            userId: user.id,
+            notes: notes || null,
+            reference_image_url: reference_image_url || null,
+            quotation_windows: { create: windowsData },
+          },
+          include: { quotation_windows: true },
+        });
+      }, {
+        isolationLevel: 'Serializable',
       });
-    });
+      return result;
+    } catch (err) {
+      if (err.code === 'P2002') {
+        throw new ConflictException(
+          'Otro vendedor creó una cotización al mismo tiempo. Por favor intenta de nuevo.'
+        );
+      }
+      throw err;
+    }
   }
 
   // ─── findAll ─────────────────────────────────────────────────────────────────
