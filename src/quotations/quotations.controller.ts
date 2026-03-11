@@ -12,6 +12,8 @@ import {
   Query,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { Roles } from '../auth/roles.decorator';
+import { RolesGuard } from '../auth/roles.guard';
 import { QuotationsService } from './quotations.service';
 import {
   CreateQuotationDto,
@@ -68,6 +70,8 @@ export class QuotationsController {
     return this.quotationsService.update(id, updateQuotationDto, req.user);
   }
 
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN')
   @Delete(':id')
   remove(@Param('id', ParseIntPipe) id: number, @Request() req) {
     return this.quotationsService.remove(id, req.user);
