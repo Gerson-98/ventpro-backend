@@ -60,15 +60,16 @@ enum ChecklistType {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model User {
-  id         Int         @id @default(autoincrement())
-  email      String      @unique
-  name       String
-  password   String
-  role       Role        @default(VENDEDOR)
-  createdAt  DateTime    @default(now())
-  updatedAt  DateTime    @updatedAt
-  quotations Quotation[]
-  checklists Checklist[]
+  id             Int            @id @default(autoincrement())
+  email          String         @unique
+  name           String
+  password       String
+  role           Role           @default(VENDEDOR)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  quotations     Quotation[]
+  checklists     Checklist[]
+  refreshTokens  RefreshToken[]
 
   @@map("users")
 }
@@ -424,4 +425,22 @@ model ChecklistItem {
   template     ChecklistTemplate @relation(fields: [template_id], references: [id])
 
   @@map("checklist_items")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AUTENTICACIÓN — REFRESH TOKENS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model RefreshToken {
+  id        Int       @id @default(autoincrement())
+  token     String    @unique
+  userId    Int
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+  revokedAt DateTime?
+
+  @@index([userId])
+  @@index([token])
+  @@map("refresh_tokens")
 }
