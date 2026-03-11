@@ -59,8 +59,8 @@ export class OrdersController {
   @UseGuards(RolesGuard)
   @Roles('ADMIN')
   @Delete(':id')
-  remove(@Param('id', ParseIntPipe) id: number) {
-    return this.ordersService.remove(id);
+  remove(@Param('id', ParseIntPipe) id: number, @Request() req) {
+    return this.ordersService.remove(id, req.user);
   }
 
   @Patch(':id/reschedule')

@@ -30,8 +30,19 @@ import { ChecklistsModule } from './checklists/checklists.module';
 
 @Module({
   imports: [
-    // ✅ Rate limiting: máximo 5 requests por minuto por IP
-    ThrottlerModule.forRoot([{ ttl: 60000, limit: 5 }]),
+    // ✅ Rate limiting: global 200 req/min para la SPA, login 5 req/min anti fuerza bruta
+    ThrottlerModule.forRoot([
+      {
+        name: 'global',
+        ttl: 60000,
+        limit: 200,
+      },
+      {
+        name: 'login',
+        ttl: 60000,
+        limit: 5,
+      },
+    ]),
     OrdersModule,
     WindowsModule,
     WindowTypesModule,

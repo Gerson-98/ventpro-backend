@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -172,7 +173,21 @@ export class OrdersService {
   }
 
   // ─── remove ───────────────────────────────────────────────────────────────
-  remove(id: number) {
+  async remove(id: number, user: AuthUser) {
+    if (!this.isAdmin(user)) {
+      throw new ForbiddenException(
+        'Solo un administrador puede eliminar pedidos',
+      );
+    }
+
+    const order = await this.prisma.order.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!order) {
+      throw new NotFoundException(`Pedido #${id} no encontrado`);
+    }
+
     return this.prisma.order.delete({ where: { id } });
   }
 
