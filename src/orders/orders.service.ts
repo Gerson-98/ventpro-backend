@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -114,13 +115,17 @@ export class OrdersService {
   }
 
   // ─── update ───────────────────────────────────────────────────────────────
-  update(
+  // Implementa optimistic locking usando el campo `version`.
+  // Si dos usuarios editan el mismo pedido simultáneamente, el segundo
+  // recibirá un error 409 Conflict en lugar de sobreescribir silenciosamente.
+  async update(
     id: number,
     data: {
       project?: string;
       total?: number;
       status?: string;
       include_iva?: boolean;
+      version?: number;
     },
   ) {
     let statusEnum: OrderStatus | undefined;
@@ -130,6 +135,24 @@ export class OrdersService {
       if (!statusEnum) throw new BadRequestException('Estado no válido');
     }
 
+    // Si se envía version, verificar que nadie más haya modificado el pedido
+    if (data.version !== undefined) {
+      const current = await this.prisma.order.findUnique({
+        where: { id },
+        select: { version: true },
+      });
+
+      if (!current) {
+        throw new NotFoundException(`Pedido #${id} no encontrado.`);
+      }
+
+      if (current.version !== data.version) {
+        throw new ConflictException(
+          'Este pedido fue modificado por otro usuario. Recarga la página para ver los cambios más recientes.',
+        );
+      }
+    }
+
     return this.prisma.order.update({
       where: { id },
       data: {
@@ -137,6 +160,8 @@ export class OrdersService {
         total: data.total ? Number(data.total) : undefined,
         status: statusEnum,
         include_iva: data.include_iva,
+        // Incrementa version en cada actualización
+        version: { increment: 1 },
       },
       include: {
         client: true,
@@ -210,7 +235,6 @@ export class OrdersService {
     const startDate = new Date(installationStartDate);
     const endDate = new Date(installationEndDate);
 
-    // No se valida traslape: se permiten múltiples instalaciones en el mismo día.
     return this.prisma.order.update({
       where: { id },
       data: {
