@@ -17,7 +17,7 @@ export class WindowsService {
     });
     if (order) {
       const newTotal = order.windows.reduce((sum, w) => {
-        return sum + (Number(w.price) || 0) * (Number(w.quantity) || 1);
+        return sum + (Number(w.price) || 0);
       }, 0);
       // CAMBIO: orders -> order
       await this.prisma.order.update({
@@ -27,16 +27,30 @@ export class WindowsService {
     }
   }
 
-  async findAll() {
-    // CAMBIO: windows -> window, window_type -> windowType, clients -> client
-    return this.prisma.window.findMany({
-      include: {
-        windowType: true,
-        pvcColor: true,
-        glassColor: true,
-        order: { include: { client: true } },
-      },
-    });
+  async findAll(page = 1, limit = 50) {
+    const skip = (page - 1) * limit;
+    const safeLimit = Math.min(limit, 100);
+    const [data, total] = await this.prisma.$transaction([
+      this.prisma.window.findMany({
+        include: {
+          windowType: true,
+          pvcColor: true,
+          glassColor: true,
+          order: { include: { client: true } },
+        },
+        orderBy: { id: 'desc' },
+        take: safeLimit,
+        skip,
+      }),
+      this.prisma.window.count(),
+    ]);
+    return {
+      data,
+      total,
+      page,
+      limit: safeLimit,
+      totalPages: Math.ceil(total / safeLimit),
+    };
   }
 
   async findOne(id: number) {
@@ -311,6 +325,15 @@ export class WindowsService {
     const hojaAlto = height - hojaDescuento;
     const vidrioAncho = hojaAncho - vidrioDescuento;
     const vidrioAlto = hojaAlto - vidrioDescuento;
+
+    // Validar que las medidas sean positivas
+    if (hojaAncho <= 0 || hojaAlto <= 0 || vidrioAncho <= 0 || vidrioAlto <= 0) {
+      throw new BadRequestException(
+        `Las medidas calculadas son inválidas para este tipo de ventana. ` +
+        `Verifica que las dimensiones (${width}×${height}cm) sean compatibles ` +
+        `con la configuración del tipo de ventana seleccionado.`
+      );
+    }
 
     return {
       hojaAncho: Number(hojaAncho.toFixed(1)),

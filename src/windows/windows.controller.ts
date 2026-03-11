@@ -6,6 +6,7 @@ import {
   Param,
   Post,
   Put,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -18,8 +19,11 @@ export class WindowsController {
   constructor(private readonly windowsService: WindowsService) {}
 
   @Get()
-  findAll() {
-    return this.windowsService.findAll();
+  findAll(
+    @Query('page') page = '1',
+    @Query('limit') limit = '50',
+  ) {
+    return this.windowsService.findAll(+page, +limit);
   }
 
   @Get(':id')
@@ -29,7 +33,6 @@ export class WindowsController {
 
   @Post()
   async create(@Body() data: any) {
-    console.log('🧾 Datos recibidos del frontend:', data);
     return this.windowsService.create(data);
   }
 

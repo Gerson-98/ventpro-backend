@@ -52,8 +52,8 @@ export class OrdersController {
   }
 
   @Patch(':id')
-  update(@Param('id', ParseIntPipe) id: number, @Body() data: UpdateOrderDto) {
-    return this.ordersService.update(id, data);
+  update(@Param('id', ParseIntPipe) id: number, @Body() data: UpdateOrderDto, @Request() req) {
+    return this.ordersService.update(id, data, req.user);
   }
 
   @UseGuards(RolesGuard)
@@ -67,15 +67,17 @@ export class OrdersController {
   reschedule(
     @Param('id', ParseIntPipe) id: number,
     @Body() rescheduleOrderDto: RescheduleOrderDto,
+    @Request() req,
   ) {
-    return this.ordersService.reschedule(id, rescheduleOrderDto);
+    return this.ordersService.reschedule(id, rescheduleOrderDto, req.user);
   }
 
   @Patch(':id/status')
   updateStatus(
     @Param('id', ParseIntPipe) id: number,
     @Body() updateOrderStatusDto: UpdateOrderStatusDto,
+    @Request() req,
   ) {
-    return this.ordersService.updateStatus(id, updateOrderStatusDto);
+    return this.ordersService.updateStatus(id, updateOrderStatusDto, req.user);
   }
 }

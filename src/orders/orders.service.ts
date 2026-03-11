@@ -28,6 +28,26 @@ export class OrdersService {
     return user.role === 'ADMIN';
   }
 
+  private async assertOwnership(orderId: number, user: AuthUser): Promise<void> {
+    if (this.isAdmin(user)) return;
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        generatedFromQuotation: {
+          select: { userId: true },
+        },
+      },
+    });
+    if (!order) {
+      throw new NotFoundException(`Pedido #${orderId} no encontrado.`);
+    }
+    if (order.generatedFromQuotation?.userId !== user.id) {
+      throw new ForbiddenException(
+        'No tienes permiso para modificar este pedido.',
+      );
+    }
+  }
+
   // ─── create ──────────────────────────────────────────────────────────────
   create(data: {
     project: string;
@@ -60,7 +80,8 @@ export class OrdersService {
   // Admin: todos los pedidos
   // Vendedor: solo los pedidos generados desde sus cotizaciones
   async findAll(user: AuthUser, page = 1, limit = 50) {
-    const skip = (page - 1) * limit;
+    const safeLimit = Math.min(limit, 100);
+    const skip = (page - 1) * safeLimit;
     const whereClause = this.isAdmin(user)
       ? {}
       : {
@@ -82,7 +103,7 @@ export class OrdersService {
           },
         },
         orderBy: { id: 'desc' },
-        take: limit,
+        take: safeLimit,
         skip,
       }),
       this.prisma.order.count({ where: whereClause }),
@@ -92,8 +113,8 @@ export class OrdersService {
       data,
       total,
       page,
-      limit,
-      totalPages: Math.ceil(total / limit),
+      limit: safeLimit,
+      totalPages: Math.ceil(total / safeLimit),
     };
   }
 
@@ -128,7 +149,10 @@ export class OrdersService {
       include_iva?: boolean;
       version?: number;
     },
+    user: AuthUser,
   ) {
+    await this.assertOwnership(id, user);
+
     let statusEnum: OrderStatus | undefined;
     if (data.status) {
       const key = data.status as keyof typeof OrderStatus;
@@ -240,7 +264,9 @@ export class OrdersService {
   }
 
   // ─── reschedule ───────────────────────────────────────────────────────────
-  async reschedule(id: number, rescheduleOrderDto: RescheduleOrderDto) {
+  async reschedule(id: number, rescheduleOrderDto: RescheduleOrderDto, user: AuthUser) {
+    await this.assertOwnership(id, user);
+
     const { installationStartDate, installationEndDate } = rescheduleOrderDto;
 
     const order = await this.prisma.order.findUnique({ where: { id } });
@@ -260,7 +286,9 @@ export class OrdersService {
   }
 
   // ─── updateStatus ─────────────────────────────────────────────────────────
-  async updateStatus(id: number, updateOrderStatusDto: UpdateOrderStatusDto) {
+  async updateStatus(id: number, updateOrderStatusDto: UpdateOrderStatusDto, user: AuthUser) {
+    await this.assertOwnership(id, user);
+
     const newStatus = updateOrderStatusDto.status as keyof typeof OrderStatus;
     const statusEnum = OrderStatus[newStatus];
     if (!statusEnum) throw new BadRequestException('Estado no válido');

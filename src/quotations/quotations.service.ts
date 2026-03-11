@@ -144,7 +144,8 @@ export class QuotationsService {
   // Defaults: página 1, 50 registros por página.
 
   async findAll(user: AuthUser, page = 1, limit = 50) {
-    const skip = (page - 1) * limit;
+    const safeLimit = Math.min(limit, 100);
+    const skip = (page - 1) * safeLimit;
     const whereClause = this.isAdmin(user) ? {} : { userId: user.id };
 
     const [data, total] = await this.prisma.$transaction([
@@ -155,7 +156,7 @@ export class QuotationsService {
           user: { select: { id: true, name: true } },
         },
         orderBy: { createdAt: 'desc' },
-        take: limit,
+        take: safeLimit,
         skip,
       }),
       this.prisma.quotation.count({ where: whereClause }),
@@ -165,8 +166,8 @@ export class QuotationsService {
       data,
       total,
       page,
-      limit,
-      totalPages: Math.ceil(total / limit),
+      limit: safeLimit,
+      totalPages: Math.ceil(total / safeLimit),
     };
   }
 
