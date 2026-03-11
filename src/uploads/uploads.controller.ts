@@ -10,28 +10,24 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
-import { extname, join } from 'path';
-import { unlink } from 'fs/promises';
 import { PrismaService } from '../prisma/prisma.service';
+import { getCloudinaryStorage } from './cloudinary.config';
 
-// Config reutilizable de multer para imágenes
+// Config reutilizable de multer para imágenes — almacena en Cloudinary
 const imageMulterConfig = {
-  storage: diskStorage({
-    destination: './public/uploads/designs',
-    filename: (req, file, cb) => {
-      const randomName = Array(32)
-        .fill(null)
-        .map(() => Math.round(Math.random() * 16).toString(16))
-        .join('');
-      return cb(null, `${randomName}${extname(file.originalname)}`);
-    },
-  }),
+  storage: getCloudinaryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    if (!file.originalname.match(/\.(jpg|jpeg|png|gif)$/i)) {
+    const allowedMimes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    const allowedExts = /\.(jpg|jpeg|png|gif|webp)$/i;
+    if (
+      !allowedExts.test(file.originalname) ||
+      !allowedMimes.includes(file.mimetype)
+    ) {
       return cb(
-        new BadRequestException('Solo se permiten archivos de imagen.'),
+        new BadRequestException(
+          'Solo se permiten imágenes JPG, PNG, GIF o WebP.',
+        ),
         false,
       );
     }
@@ -62,15 +58,7 @@ export class UploadsController {
         `No se encontró la ventana de cotización con ID #${windowId}`,
       );
 
-    if (quotationWindow.design_image_url) {
-      try {
-        await unlink(
-          join(process.cwd(), 'public', quotationWindow.design_image_url),
-        );
-      } catch {}
-    }
-
-    const imageUrl = `/uploads/designs/${file.filename}`;
+    const imageUrl = file.path;
     return this.prisma.quotationWindow.update({
       where: { id: windowId },
       data: { design_image_url: imageUrl },
@@ -93,17 +81,7 @@ export class UploadsController {
         `No se encontró la ventana del pedido con ID #${id}`,
       );
 
-    if (orderWindow.design_image_url) {
-      try {
-        await unlink(
-          join(process.cwd(), 'public', orderWindow.design_image_url),
-        );
-      } catch (error) {
-        console.warn(`No se pudo borrar la imagen anterior: ${error.message}`);
-      }
-    }
-
-    const imageUrl = `/uploads/designs/${file.filename}`;
+    const imageUrl = file.path;
     return this.prisma.window.update({
       where: { id },
       data: { design_image_url: imageUrl },
@@ -117,7 +95,7 @@ export class UploadsController {
   @UseInterceptors(FileInterceptor('file', imageMulterConfig))
   async uploadReferenceImage(@UploadedFile() file: Express.Multer.File) {
     if (!file) throw new BadRequestException('No se ha subido ningún archivo.');
-    const imageUrl = `/uploads/designs/${file.filename}`;
+    const imageUrl = file.path;
     return { url: imageUrl };
   }
 }

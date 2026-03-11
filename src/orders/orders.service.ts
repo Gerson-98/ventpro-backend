@@ -119,8 +119,8 @@ export class OrdersService {
   }
 
   // ─── findOne ──────────────────────────────────────────────────────────────
-  findOne(id: number) {
-    return this.prisma.order.findUnique({
+  async findOne(id: number, user: AuthUser) {
+    const order = await this.prisma.order.findUnique({
       where: { id },
       include: {
         client: true,
@@ -134,6 +134,16 @@ export class OrdersService {
         },
       },
     });
+    if (!order) throw new NotFoundException(`Pedido #${id} no encontrado.`);
+    if (
+      !this.isAdmin(user) &&
+      order.generatedFromQuotation?.userId !== user.id
+    ) {
+      throw new ForbiddenException(
+        'No tienes permiso para ver este pedido.',
+      );
+    }
+    return order;
   }
 
   // ─── update ───────────────────────────────────────────────────────────────

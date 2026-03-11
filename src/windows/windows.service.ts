@@ -2,12 +2,44 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+
+interface AuthUser {
+  id: number;
+  name: string;
+  role: string;
+}
 
 @Injectable()
 export class WindowsService {
   constructor(private prisma: PrismaService) {}
+
+  private async assertWindowOwnership(
+    windowId: number,
+    user: AuthUser,
+  ): Promise<void> {
+    if (user.role === 'ADMIN') return;
+    const win = await this.prisma.window.findUnique({
+      where: { id: windowId },
+      select: {
+        order: {
+          select: {
+            generatedFromQuotation: {
+              select: { userId: true },
+            },
+          },
+        },
+      },
+    });
+    if (!win) throw new NotFoundException(`Ventana #${windowId} no encontrada.`);
+    if (win.order?.generatedFromQuotation?.userId !== user.id) {
+      throw new ForbiddenException(
+        'No tienes permiso para modificar esta ventana.',
+      );
+    }
+  }
 
   private async recalculateOrderTotal(orderId: number) {
     // CAMBIO: orders -> order
@@ -122,7 +154,8 @@ export class WindowsService {
     return newWindow;
   }
 
-  async updateWindow(id: number, data: any) {
+  async updateWindow(id: number, data: any, user: AuthUser) {
+    await this.assertWindowOwnership(id, user);
     // CAMBIO: windows -> window
     const existing = await this.prisma.window.findUnique({ where: { id } });
     if (!existing)
@@ -219,7 +252,8 @@ export class WindowsService {
     return updated;
   }
 
-  async duplicateWindow(id: number) {
+  async duplicateWindow(id: number, user: AuthUser) {
+    await this.assertWindowOwnership(id, user);
     // CAMBIO: windows -> window
     const original = await this.prisma.window.findUnique({ where: { id } });
     if (!original)
@@ -258,7 +292,8 @@ export class WindowsService {
     return duplicated;
   }
 
-  async remove(id: number) {
+  async remove(id: number, user: AuthUser) {
+    await this.assertWindowOwnership(id, user);
     // CAMBIO: windows -> window
     const existing = await this.prisma.window.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException('Ventana no encontrada');

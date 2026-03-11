@@ -7,6 +7,7 @@ import {
   Post,
   Put,
   Query,
+  Request,
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -37,19 +38,19 @@ export class WindowsController {
   }
 
   @Put(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateWindowDto) {
-    return this.windowsService.updateWindow(Number(id), dto);
+  update(@Param('id') id: string, @Body() dto: UpdateWindowDto, @Request() req) {
+    return this.windowsService.updateWindow(Number(id), dto, req.user);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.windowsService.remove(Number(id));
+  remove(@Param('id') id: string, @Request() req) {
+    return this.windowsService.remove(Number(id), req.user);
   }
 
   // ✅ DUPLICAR VENTANA
   @Post(':id/duplicate')
-  async duplicateWindow(@Param('id') id: number) {
-    return this.windowsService.duplicateWindow(Number(id));
+  async duplicateWindow(@Param('id') id: number, @Request() req) {
+    return this.windowsService.duplicateWindow(Number(id), req.user);
   }
 
   @Post('calculate-preview')

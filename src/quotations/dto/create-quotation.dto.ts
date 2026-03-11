@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   IsArray,
+  IsBoolean,
   IsDateString,
   IsNotEmpty,
   IsNumber,
@@ -74,10 +75,14 @@ export class CreateQuotationDto {
   @Type(() => QuotationWindowDto)
   windows: QuotationWindowDto[];
 
+  @IsBoolean()
+  @IsOptional()
   include_iva?: boolean;
+
+  @IsNumber()
+  @IsOptional()
   total_price?: number;
 
-  // ✅ NUEVOS
   @IsString()
   @IsOptional()
   notes?: string;

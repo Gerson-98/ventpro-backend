@@ -14,6 +14,8 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { Roles } from '../auth/roles.decorator';
+import { RolesGuard } from '../auth/roles.guard';
 import { ChecklistsService } from './checklists.service';
 import { ChecklistType } from '@prisma/client';
 
@@ -84,6 +86,8 @@ export class ChecklistsController {
     return this.checklistsService.complete(orderId, type, body, req.user);
   }
 
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN')
   @Delete('order/:orderId/:type')
   remove(
     @Param('orderId', ParseIntPipe) orderId: number,

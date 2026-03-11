@@ -35,7 +35,7 @@ import { ChecklistsModule } from './checklists/checklists.module';
       {
         name: 'global',
         ttl: 60000,
-        limit: 200,
+        limit: 1000,
       },
       {
         name: 'login',
