@@ -79,16 +79,53 @@ export class OrdersService {
   // ─── findAll ──────────────────────────────────────────────────────────────
   // Admin: todos los pedidos
   // Vendedor: solo los pedidos generados desde sus cotizaciones
-  async findAll(user: AuthUser, page = 1, limit = 50) {
+  async findAll(
+    user: AuthUser,
+    page = 1,
+    limit = 50,
+    filters: { search?: string; status?: string; month?: string } = {},
+  ) {
     const safeLimit = Math.min(limit, 100);
     const skip = (page - 1) * safeLimit;
-    const whereClause = this.isAdmin(user)
+
+    const ownershipClause = this.isAdmin(user)
       ? {}
-      : {
-          generatedFromQuotation: {
-            userId: user.id,
-          },
-        };
+      : { generatedFromQuotation: { userId: user.id } };
+
+    const statusClause =
+      filters.status && filters.status !== 'todos'
+        ? { status: filters.status as OrderStatus }
+        : {};
+
+    let monthClause: object = {};
+    if (filters.month) {
+      const [year, month] = filters.month.split('-').map(Number);
+      const start = new Date(year, month - 1, 1);
+      const end = new Date(year, month, 1);
+      monthClause = { createdAt: { gte: start, lt: end } };
+    }
+
+    const searchClause =
+      filters.search && filters.search.trim()
+        ? {
+            OR: [
+              { project: { contains: filters.search, mode: 'insensitive' as const } },
+              { client: { name: { contains: filters.search, mode: 'insensitive' as const } } },
+              {
+                generatedFromQuotation: {
+                  user: { name: { contains: filters.search, mode: 'insensitive' as const } },
+                },
+              },
+            ],
+          }
+        : {};
+
+    const whereClause = {
+      ...ownershipClause,
+      ...statusClause,
+      ...monthClause,
+      ...searchClause,
+    };
 
     const [data, total] = await this.prisma.$transaction([
       this.prisma.order.findMany({

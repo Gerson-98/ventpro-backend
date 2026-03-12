@@ -36,8 +36,15 @@ export class QuotationsController {
     @Request() req,
     @Query('page') page = '1',
     @Query('limit') limit = '50',
+    @Query('search') search?: string,
+    @Query('status') status?: string,
+    @Query('clientStatus') clientStatus?: string,
   ) {
-    return this.quotationsService.findAll(req.user, +page, +limit);
+    return this.quotationsService.findAll(req.user, +page, +limit, {
+      search,
+      quotationStatus: status,
+      clientStatus,
+    });
   }
 
   @Get(':id')

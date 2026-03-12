@@ -65,31 +65,33 @@ export class ChecklistsService {
 
   // Obtener todos los checklists de un pedido
   async findByOrder(orderId: number) {
-    const checklists = await this.prisma.checklist.findMany({
-      where: { order_id: orderId },
-      include: {
-        completedBy: { select: { id: true, name: true } },
-        items: { orderBy: { id: 'asc' } },
-      },
-      orderBy: { completedAt: 'asc' },
-    });
+    // 2 queries en paralelo en vez de 4 queries secuenciales
+    const [checklists, allTemplates] = await Promise.all([
+      this.prisma.checklist.findMany({
+        where: { order_id: orderId },
+        include: {
+          completedBy: { select: { id: true, name: true } },
+          items: { orderBy: { id: 'asc' } },
+        },
+        orderBy: { completedAt: 'asc' },
+      }),
+      this.prisma.checklistTemplate.findMany({
+        where: { active: true },
+        orderBy: { sort_order: 'asc' },
+      }),
+    ]);
 
-    // Para cada tipo, verificar si existe o traer los templates pendientes
     const types: ChecklistType[] = [
       'carga_camion',
       'verificacion_instalacion',
       'regreso',
     ];
 
-    const result = await Promise.all(
-      types.map(async (type) => {
-        const completed = checklists.find((c) => c.type === type) || null;
-        const templates = await this.findTemplatesByType(type);
-        return { type, completed, templates };
-      }),
-    );
-
-    return result;
+    return types.map((type) => ({
+      type,
+      completed: checklists.find((c) => c.type === type) || null,
+      templates: allTemplates.filter((t) => t.type === type),
+    }));
   }
 
   // Completar un checklist

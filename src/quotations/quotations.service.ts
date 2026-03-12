@@ -156,10 +156,44 @@ export class QuotationsService {
   // Paginado para evitar descargas masivas con el crecimiento de datos.
   // Defaults: página 1, 50 registros por página.
 
-  async findAll(user: AuthUser, page = 1, limit = 50) {
+  async findAll(
+    user: AuthUser,
+    page = 1,
+    limit = 50,
+    filters: { search?: string; quotationStatus?: string; clientStatus?: string } = {},
+  ) {
     const safeLimit = Math.min(limit, 100);
     const skip = (page - 1) * safeLimit;
-    const whereClause = this.isAdmin(user) ? {} : { userId: user.id };
+
+    const ownershipClause = this.isAdmin(user) ? {} : { userId: user.id };
+
+    const statusClause =
+      filters.quotationStatus && filters.quotationStatus !== 'todos'
+        ? { status: filters.quotationStatus as QuotationStatus }
+        : {};
+
+    const clientStatusClause =
+      filters.clientStatus && filters.clientStatus !== 'todos'
+        ? { client: { status: filters.clientStatus as any } }
+        : {};
+
+    const searchClause =
+      filters.search && filters.search.trim()
+        ? {
+            OR: [
+              { quotationNumber: { contains: filters.search, mode: 'insensitive' as const } },
+              { project: { contains: filters.search, mode: 'insensitive' as const } },
+              { client: { name: { contains: filters.search, mode: 'insensitive' as const } } },
+            ],
+          }
+        : {};
+
+    const whereClause = {
+      ...ownershipClause,
+      ...statusClause,
+      ...clientStatusClause,
+      ...searchClause,
+    };
 
     const [data, total] = await this.prisma.$transaction([
       this.prisma.quotation.findMany({
