@@ -7,6 +7,9 @@ import { CostCalculatorService } from '../cost-calculator/cost-calculator.servic
 
 type AccessoryRuleWithMaterial = AccessoryRule & { material: Material };
 
+// ── Movido al scope de archivo para que todos los métodos lo reconozcan ──────
+type LabeledCut = { length: number; windowLabel: string };
+
 interface MachineSerie {
   serieIndex: number;
   cuts: { length: number; windowLabel: string }[];
@@ -764,7 +767,6 @@ export class ReportsService {
     );
 
     const BAR_LENGTH = 580;
-    type LabeledCut = { length: number; windowLabel: string };
 
     const individualCutList = new Map<
       string,
@@ -1081,7 +1083,6 @@ export class ReportsService {
     cuts: LabeledCut[],
     barLength: number,
   ): LabeledCut[][] {
-    type LabeledCut = { length: number; windowLabel: string };
     const sorted = [...cuts].sort((a, b) => b.length - a.length);
     const bins: { cuts: LabeledCut[]; remaining: number }[] = [];
     for (const cut of sorted) {
@@ -1101,13 +1102,13 @@ export class ReportsService {
   }
 
   private optimizeCombinedCutsLabeled(
-    hojaCuts: { length: number; windowLabel: string }[],
-    mosquiteroCuts: { length: number; windowLabel: string }[],
+    hojaCuts: LabeledCut[],
+    mosquiteroCuts: LabeledCut[],
     barLength: number,
   ): {
-    combinedBins: { length: number; windowLabel: string }[][];
-    hojaOnlyBins: { length: number; windowLabel: string }[][];
-    mosquiteroOnlyBins: { length: number; windowLabel: string }[][];
+    combinedBins: LabeledCut[][];
+    hojaOnlyBins: LabeledCut[][];
+    mosquiteroOnlyBins: LabeledCut[][];
     machineSeries: MachineSerie[] | null;
   } {
     const hojaFreq = new Map<number, number>();
@@ -1178,27 +1179,21 @@ export class ReportsService {
     }
 
     // Fallback
-    const hojaByLength = new Map<
-      number,
-      { length: number; windowLabel: string }[]
-    >();
+    const hojaByLength = new Map<number, LabeledCut[]>();
     for (const cut of hojaCuts) {
       if (!hojaByLength.has(cut.length)) hojaByLength.set(cut.length, []);
       hojaByLength.get(cut.length)!.push(cut);
     }
-    const mosquiteroByLength = new Map<
-      number,
-      { length: number; windowLabel: string }[]
-    >();
+    const mosquiteroByLength = new Map<number, LabeledCut[]>();
     for (const cut of mosquiteroCuts) {
       if (!mosquiteroByLength.has(cut.length))
         mosquiteroByLength.set(cut.length, []);
       mosquiteroByLength.get(cut.length)!.push(cut);
     }
 
-    const pairedCuts: { length: number; windowLabel: string }[] = [];
-    const hojaLeftover: { length: number; windowLabel: string }[] = [];
-    const mosquiteroLeftover: { length: number; windowLabel: string }[] = [];
+    const pairedCuts: LabeledCut[] = [];
+    const hojaLeftover: LabeledCut[] = [];
+    const mosquiteroLeftover: LabeledCut[] = [];
 
     for (const [length, hojaGroup] of hojaByLength.entries()) {
       const mosquiteroGroup = mosquiteroByLength.get(length) ?? [];
@@ -1238,7 +1233,7 @@ export class ReportsService {
     resultObj: any,
     profileName: string,
     color: string,
-    bins: { length: number; windowLabel: string }[][],
+    bins: LabeledCut[][],
     barLength: number,
   ) {
     if (!resultObj[profileName]) resultObj[profileName] = [];
