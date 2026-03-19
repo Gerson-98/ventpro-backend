@@ -443,3 +443,12 @@ model RefreshToken {
   @@index([token])
   @@map("refresh_tokens")
 }
+
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @default(now()) @updatedAt
+ 
+  @@map("app_settings")
+}
+ 

@@ -1,3 +1,5 @@
+// RUTA: src/app.module.ts
+
 import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -28,21 +30,13 @@ import { OptionValuesModule } from './option-values/option-values.module';
 import { WindowTypeOptionsModule } from './window-type-options/window-type-options.module';
 import { ChecklistsModule } from './checklists/checklists.module';
 import { DashboardModule } from './dashboard/dashboard.module';
+import { AppSettingsModule } from './app-settings/app-settings.module';
 
 @Module({
   imports: [
-    // ✅ Rate limiting: global 200 req/min para la SPA, login 5 req/min anti fuerza bruta
     ThrottlerModule.forRoot([
-      {
-        name: 'global',
-        ttl: 60000,
-        limit: 1000,
-      },
-      {
-        name: 'login',
-        ttl: 60000,
-        limit: 5,
-      },
+      { name: 'global', ttl: 60000, limit: 1000 },
+      { name: 'login', ttl: 60000, limit: 5 },
     ]),
     OrdersModule,
     WindowsModule,
@@ -65,12 +59,12 @@ import { DashboardModule } from './dashboard/dashboard.module';
     WindowTypeOptionsModule,
     ChecklistsModule,
     DashboardModule,
+    AppSettingsModule, // ← nuevo
   ],
   controllers: [AppController, UploadsController],
   providers: [
     AppService,
     PrismaService,
-    // ✅ Aplica rate limiting globalmente a todos los endpoints
     {
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
