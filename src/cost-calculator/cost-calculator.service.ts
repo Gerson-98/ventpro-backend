@@ -168,20 +168,23 @@ export class CostCalculatorService {
   }
 
   // ── Helper: ¿el mosquitero está activo en las opciones? ─────────────────────
-  // Default TRUE: si el grupo mosquitero no existe en options (ventana sin el grupo),
-  // o si explícitamente viene 'con_mosquitero', está activo.
-  // Solo está inactivo cuando el grupo mosquitero existe pero NO tiene valor 'con_mosquitero'.
+  // Lógica clara y sin ambigüedad:
+  // - Si la ventana no tiene perfil_mosquitero_id configurado → no aplica mosquitero
+  // - Si options.mosquitero === 'sin_mosquitero' → explícitamente desactivado
+  // - Si options.mosquitero === 'con_mosquitero' → activo
+  // - Si la key 'mosquitero' no existe en options → la ventana no tiene ese grupo
+  //   asignado (ej: ventanas que no son corredizas) → siempre lleva mosquitero
   public tieneMosquitero(
     options: Record<string, string>,
     catalogo: any,
   ): boolean {
-    // Si la ventana no tiene perfil mosquitero configurado, no aplica
-    if (!catalogo?.perfil_mosquitero_id) return false;
-    // Si el grupo mosquitero no está en las opciones de esta ventana,
-    // significa que no tiene ese grupo asignado → siempre lleva mosquitero
-    if (!('mosquitero' in options)) return true;
-    // Si está en options, solo lleva mosquitero si el valor es 'con_mosquitero'
-    return options['mosquitero'] === 'con_mosquitero';
+    // Si la ventana no tiene perfil mosquitero configurado en el catálogo, no aplica
+    if (!catalogo?.perfil_mosquitero_id && !catalogo?.perfilMosquitero)
+      return false;
+    // Si el grupo mosquitero existe en options y está explícitamente desactivado
+    if (options['mosquitero'] === 'sin_mosquitero') return false;
+    // Si está explícitamente activado o la key no existe (ventana sin el grupo)
+    return true;
   }
 
   // ── Helper: ¿el refuerzo de hojas está activo? ──────────────────────────────
