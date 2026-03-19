@@ -38,22 +38,17 @@ export interface QuotationCostResult {
   por_ventana: WindowCostResult[];
 }
 
-// ── Resultado ampliado de aplicarRuleOverrides ────────────────────────────────
-// Ahora incluye también los IDs de perfil resueltos según las opciones elegidas.
-// null significa "usar el perfil base del catálogo sin cambios".
 export interface ResolvedRules {
   regla_marco: string | null;
   regla_hoja: string | null;
   regla_mosquitero: string | null;
   regla_batiente: string | null;
   regla_tapajamba: string | null;
-  // Perfiles resueltos — null = usar el del catálogo base
   perfil_marco_id: number | null;
   perfil_hoja_id: number | null;
   perfil_mosquitero_id: number | null;
   perfil_batiente_id: number | null;
   perfil_tapajamba_id: number | null;
-  // cant_vidrios resuelto — null = usar el del catálogo base
   cant_vidrios: number | null;
 }
 
@@ -61,9 +56,6 @@ const LARGO_BARRA_CM = 580;
 const PLANCHA_VIDRIO_CM2 = 35310;
 const MARGEN_MINIMO = 0.4;
 
-// ── TTL del cache de catálogos: 5 minutos ─────────────────────────────────────
-// Los catálogos (tipos de ventana, cálculos, perfiles) raramente cambian en runtime.
-// Cachearlos elimina el 60-70% de las queries al calcular costos de ventanas.
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 interface CacheEntry<T> {
@@ -75,7 +67,6 @@ interface CacheEntry<T> {
 export class CostCalculatorService {
   constructor(private prisma: PrismaService) {}
 
-  // ── Cache en memoria (por instancia del servicio) ─────────────────────────
   private pvcColorCache = new Map<number, CacheEntry<any>>();
   private windowTypeCache = new Map<number, CacheEntry<any>>();
   private catalogoCache = new Map<number, CacheEntry<any>>();
@@ -103,7 +94,6 @@ export class CostCalculatorService {
     cache.set(key, { value, expiresAt: Date.now() + CACHE_TTL_MS });
   }
 
-  // Limpia el cache manualmente — llamar desde admin cuando se actualicen catálogos
   clearCache(): void {
     this.pvcColorCache.clear();
     this.windowTypeCache.clear();
@@ -143,9 +133,11 @@ export class CostCalculatorService {
         perfilMosquitero: true,
         perfilBatiente: true,
         perfilTapajamba: true,
+        // ── NUEVOS ──────────────────────────────────────────
+        refuerzoHoja: true,
+        refuerzoMosquitero: true,
       },
     });
-    // Cachear aunque sea null (tipo de ventana sin catálogo configurado)
     this.setInCache(this.catalogoCache, windowTypeId, result);
     return result;
   }
@@ -171,6 +163,33 @@ export class CostCalculatorService {
     return result;
   }
 
+  // ── Helper: ¿el mosquitero está activo en las opciones? ─────────────────────
+  // Default TRUE: si el grupo mosquitero no existe en options (ventana sin el grupo),
+  // o si explícitamente viene 'con_mosquitero', está activo.
+  // Solo está inactivo cuando el grupo mosquitero existe pero NO tiene valor 'con_mosquitero'.
+  public tieneMosquitero(
+    options: Record<string, string>,
+    catalogo: any,
+  ): boolean {
+    // Si la ventana no tiene perfil mosquitero configurado, no aplica
+    if (!catalogo?.perfil_mosquitero_id) return false;
+    // Si el grupo mosquitero no está en las opciones de esta ventana,
+    // significa que no tiene ese grupo asignado → siempre lleva mosquitero
+    if (!('mosquitero' in options)) return true;
+    // Si está en options, solo lleva mosquitero si el valor es 'con_mosquitero'
+    return options['mosquitero'] === 'con_mosquitero';
+  }
+
+  // ── Helper: ¿el refuerzo de hojas está activo? ──────────────────────────────
+  public tieneRefuerzoHojas(options: Record<string, string>): boolean {
+    return options['refuerzo_hojas'] === 'con_refuerzo';
+  }
+
+  // ── Helper: ¿el refuerzo de mosquitero está activo? ─────────────────────────
+  public tieneRefuerzoMosquitero(options: Record<string, string>): boolean {
+    return options['refuerzo_mosquitero'] === 'con_refuerzo';
+  }
+
   async calcularCostoVentana(
     input: WindowCostInput,
   ): Promise<WindowCostResult> {
@@ -183,9 +202,6 @@ export class CostCalculatorService {
       quantity = 1,
     } = input;
 
-    // ── Usar métodos con cache — evita 4 queries repetidas por ventana ────────
-    // En una cotización de 80 ventanas del mismo tipo, esto pasa de ~320 queries
-    // a ~4 queries (solo la primera vez por window_type_id en esa sesión).
     const pvcColor = await this.getPvcColor(color_id);
     const esBlanco = pvcColor
       ? pvcColor.name.toUpperCase().includes('BLANCO')
@@ -208,21 +224,21 @@ export class CostCalculatorService {
     const mosquiteroAncho = Number((hojaAncho - vidrioDescuento).toFixed(2));
     const mosquiteroAlto = Number((hojaAlto - vidrioDescuento).toFixed(2));
 
+    // ── Determinar si lleva mosquitero y refuerzos ───────────────────────────
+    const conMosquitero = this.tieneMosquitero(options, catalogo);
+    const conRefuerzoHojas = this.tieneRefuerzoHojas(options);
+    const conRefuerzoMosquitero = this.tieneRefuerzoMosquitero(options);
+
     const detalle: MaterialCostLine[] = [];
 
     if (catalogo) {
-      // ── Aplicar ruleOverrides + perfilOverrides según opciones elegidas ────
       const reglas = this.aplicarRuleOverrides(catalogo, options);
 
-      // ── Resolver perfiles finales: override tiene prioridad sobre base ─────
-      // Si aplicarRuleOverrides devuelve un perfil_X_id != null, ese perfil
-      // reemplaza al del catálogo base. Hay que cargarlo desde BD.
       const perfilesOverride = await this.resolverPerfilesOverride(
         reglas,
         catalogo,
       );
 
-      // ── cant_vidrios resuelto ──────────────────────────────────────────────
       const cantVidrios = reglas.cant_vidrios ?? catalogo.cant_vidrios;
 
       const perfiles = [
@@ -232,6 +248,7 @@ export class CostCalculatorService {
           ancho: width_cm,
           alto: height_cm,
           label: 'MARCO',
+          incluir: true,
         },
         {
           perfil: perfilesOverride.hoja,
@@ -239,13 +256,16 @@ export class CostCalculatorService {
           ancho: hojaAncho,
           alto: hojaAlto,
           label: 'HOJA',
+          incluir: true,
         },
         {
+          // ── MOSQUITERO: solo si conMosquitero es true ──────────────────────
           perfil: perfilesOverride.mosquitero,
           regla: reglas.regla_mosquitero,
           ancho: mosquiteroAncho,
           alto: mosquiteroAlto,
           label: 'MOSQUITERO',
+          incluir: conMosquitero,
         },
         {
           perfil: perfilesOverride.batiente,
@@ -253,6 +273,7 @@ export class CostCalculatorService {
           ancho: hojaAncho,
           alto: hojaAlto,
           label: 'BATIENTE',
+          incluir: true,
         },
         {
           perfil: perfilesOverride.tapajamba,
@@ -260,19 +281,18 @@ export class CostCalculatorService {
           ancho: width_cm,
           alto: height_cm,
           label: 'TAPAJAMBA',
+          incluir: true,
         },
       ];
 
-      for (const { perfil, regla, ancho, alto, label } of perfiles) {
-        if (!perfil || !regla) continue;
+      for (const { perfil, regla, ancho, alto, label, incluir } of perfiles) {
+        if (!incluir || !perfil || !regla) continue;
 
         const metrosTotales = this.applyRule(regla, ancho, alto);
         const barras = metrosTotales / LARGO_BARRA_CM;
-
         const precio = esBlanco
           ? (perfil.price_white ?? 0)
           : (perfil.price_color ?? perfil.price_white ?? 0);
-
         const barrasEnteras = Math.ceil(barras * quantity);
         const costoLinea = barrasEnteras * precio;
 
@@ -285,10 +305,55 @@ export class CostCalculatorService {
           costo_total: costoLinea,
           unidad: 'barras',
         });
+
+        // ── REFUERZO HOJAS: misma cantidad de barras que la hoja ────────────
+        if (label === 'HOJA' && conRefuerzoHojas && catalogo.refuerzoHoja) {
+          const precioRef = esBlanco
+            ? (catalogo.refuerzoHoja.price_white ?? 0)
+            : (catalogo.refuerzoHoja.price_color ??
+              catalogo.refuerzoHoja.price_white ??
+              0);
+          detalle.push({
+            material_id: catalogo.refuerzoHoja.id,
+            nombre: catalogo.refuerzoHoja.name,
+            tipo: 'PERFIL',
+            cantidad: barrasEnteras,
+            precio_unitario: precioRef,
+            costo_total: barrasEnteras * precioRef,
+            unidad: 'barras',
+          });
+        }
+
+        // ── REFUERZO MOSQUITERO: misma cantidad de barras que el mosquitero ─
+        if (
+          label === 'MOSQUITERO' &&
+          conRefuerzoMosquitero &&
+          catalogo.refuerzoMosquitero
+        ) {
+          const precioRef = esBlanco
+            ? (catalogo.refuerzoMosquitero.price_white ?? 0)
+            : (catalogo.refuerzoMosquitero.price_color ??
+              catalogo.refuerzoMosquitero.price_white ??
+              0);
+          detalle.push({
+            material_id: catalogo.refuerzoMosquitero.id,
+            nombre: catalogo.refuerzoMosquitero.name,
+            tipo: 'PERFIL',
+            cantidad: barrasEnteras,
+            precio_unitario: precioRef,
+            costo_total: barrasEnteras * precioRef,
+            unidad: 'barras',
+          });
+        }
       }
 
-      // ── Vidrio ─────────────────────────────────────────────────────────────
-      if (cantVidrios && cantVidrios > 0 && input.glass_color_id) {
+      // ── Vidrio: solo si tiene mosquitero (el mosquitero define el área de vidrio) ─
+      if (
+        conMosquitero &&
+        cantVidrios &&
+        cantVidrios > 0 &&
+        input.glass_color_id
+      ) {
         const glassColor = await this.prisma.glassColor.findUnique({
           where: { id: input.glass_color_id },
           include: { material: true },
@@ -300,7 +365,6 @@ export class CostCalculatorService {
           const planchasEnteras = Math.ceil(
             (areaVidrioCm2 / PLANCHA_VIDRIO_CM2) * quantity,
           );
-
           const precioVidrio = esBlanco
             ? (materialVidrio.price_white ?? materialVidrio.price_color ?? 0)
             : (materialVidrio.price_color ?? materialVidrio.price_white ?? 0);
@@ -324,13 +388,19 @@ export class CostCalculatorService {
       esBlanco,
       quantity,
       detalle,
+      conMosquitero,
     );
 
     const costo_perfiles = detalle
       .filter((d) =>
-        ['MARCO', 'HOJA', 'MOSQUITERO', 'BATIENTE', 'TAPAJAMBA'].includes(
-          d.tipo,
-        ),
+        [
+          'MARCO',
+          'HOJA',
+          'MOSQUITERO',
+          'BATIENTE',
+          'TAPAJAMBA',
+          'PERFIL',
+        ].includes(d.tipo),
       )
       .reduce((s, d) => s + d.costo_total, 0);
     const costo_vidrio = detalle
@@ -351,9 +421,6 @@ export class CostCalculatorService {
     };
   }
 
-  // ── Helper: carga desde BD los perfiles resueltos por el override ──────────
-  // Si el override no cambió un perfil (null), usa el del catálogo base.
-  // Esto evita N+1 — solo consulta los perfiles que realmente cambiaron.
   private async resolverPerfilesOverride(
     reglas: ResolvedRules,
     catalogo: {
@@ -364,7 +431,6 @@ export class CostCalculatorService {
       perfilTapajamba: any;
     },
   ) {
-    // Recolectar IDs únicos que necesitan cargarse desde BD
     const idsACargar = [
       reglas.perfil_marco_id,
       reglas.perfil_hoja_id,
@@ -373,7 +439,6 @@ export class CostCalculatorService {
       reglas.perfil_tapajamba_id,
     ].filter((id): id is number => id !== null);
 
-    // Una sola query para todos los perfiles que cambiaron
     const materialesOverride =
       idsACargar.length > 0
         ? await this.prisma.material.findMany({
@@ -407,40 +472,6 @@ export class CostCalculatorService {
     };
   }
 
-  /**
-   * Aplica ruleOverrides del catálogo según las opciones elegidas por el usuario.
-   *
-   * ── Formato del JSON ruleOverrides (ampliado) ──────────────────────────────
-   * Ahora soporta además de reglas, overrides de perfil y cant_vidrios:
-   *
-   * {
-   *   "afuera": {
-   *     "perfil_hoja_id": 56,
-   *     "regla_hoja": "SUMAR ANCHO Y ALTO Y *4"
-   *   },
-   *   "adentro": {
-   *     "perfil_hoja_id": 11,
-   *     "regla_hoja": "SUMAR ANCHO Y ALTO Y *4"
-   *   },
-   *   "1": {
-   *     "cant_vidrios": 1
-   *   },
-   *   "2": {
-   *     "cant_vidrios": 2
-   *   },
-   *   "laterales_ocultos": {
-   *     "regla_mosquitero": "SUMAR ANCHO Y ALTO Y *4"
-   *   }
-   * }
-   *
-   * Campos soportados en cada override:
-   *   regla_marco, regla_hoja, regla_mosquitero, regla_batiente, regla_tapajamba
-   *   perfil_marco_id, perfil_hoja_id, perfil_mosquitero_id,
-   *   perfil_batiente_id, perfil_tapajamba_id
-   *   cant_vidrios
-   *
-   * null en los campos de perfil/cant_vidrios = sin cambio, usar el base.
-   */
   public aplicarRuleOverrides(
     catalogo: {
       regla_marco: string | null;
@@ -452,14 +483,12 @@ export class CostCalculatorService {
     },
     options: Record<string, string>,
   ): ResolvedRules {
-    // Empezar con las reglas base del catálogo
     let regla_marco = catalogo.regla_marco;
     let regla_hoja = catalogo.regla_hoja;
     let regla_mosquitero = catalogo.regla_mosquitero;
     let regla_batiente = catalogo.regla_batiente;
     let regla_tapajamba = catalogo.regla_tapajamba;
 
-    // Perfiles: null = sin override, usar el base
     let perfil_marco_id: number | null = null;
     let perfil_hoja_id: number | null = null;
     let perfil_mosquitero_id: number | null = null;
@@ -488,12 +517,19 @@ export class CostCalculatorService {
       Record<string, any>
     >;
 
-    // Iterar todos los valores de las opciones elegidas por el usuario
-    for (const optionValue of Object.values(options)) {
+    // Excluir los keys de mosquitero/refuerzo del procesamiento de ruleOverrides
+    // para que no interfieran con la lógica de perfiles
+    const SKIP_KEYS = new Set([
+      'mosquitero',
+      'refuerzo_hojas',
+      'refuerzo_mosquitero',
+    ]);
+
+    for (const [optionGroup, optionValue] of Object.entries(options)) {
+      if (SKIP_KEYS.has(optionGroup)) continue;
       const override = overrides[optionValue];
       if (!override) continue;
 
-      // ── Reglas de cálculo ──────────────────────────────────────────────────
       if (override.regla_marco) regla_marco = override.regla_marco;
       if (override.regla_hoja) regla_hoja = override.regla_hoja;
       if (override.regla_mosquitero)
@@ -501,7 +537,6 @@ export class CostCalculatorService {
       if (override.regla_batiente) regla_batiente = override.regla_batiente;
       if (override.regla_tapajamba) regla_tapajamba = override.regla_tapajamba;
 
-      // ── Perfiles (IDs de material) ─────────────────────────────────────────
       if (override.perfil_marco_id != null)
         perfil_marco_id = Number(override.perfil_marco_id);
       if (override.perfil_hoja_id != null)
@@ -512,8 +547,6 @@ export class CostCalculatorService {
         perfil_batiente_id = Number(override.perfil_batiente_id);
       if (override.perfil_tapajamba_id != null)
         perfil_tapajamba_id = Number(override.perfil_tapajamba_id);
-
-      // ── Cantidad de vidrios ────────────────────────────────────────────────
       if (override.cant_vidrios != null)
         cant_vidrios = Number(override.cant_vidrios);
     }
@@ -550,9 +583,15 @@ export class CostCalculatorService {
 
     if (options && calcParams.calculationOverrides) {
       const overrides = calcParams.calculationOverrides as Record<string, any>;
-      for (const optionValue of Object.values(options)) {
-        if (overrides[optionValue as string]) {
-          const override = overrides[optionValue as string];
+      const SKIP_KEYS = new Set([
+        'mosquitero',
+        'refuerzo_hojas',
+        'refuerzo_mosquitero',
+      ]);
+      for (const [optionGroup, optionValue] of Object.entries(options)) {
+        if (SKIP_KEYS.has(optionGroup)) continue;
+        const override = overrides[optionValue as string];
+        if (override) {
           hojaMargen = override.hojaMargen ?? hojaMargen;
           hojaDescuento = override.hojaDescuento ?? hojaDescuento;
           hojaDivision = override.hojaDivision ?? hojaDivision;
@@ -587,12 +626,12 @@ export class CostCalculatorService {
   public applyRule(regla: string, ancho: number, alto: number): number {
     const r = regla.toUpperCase().trim();
     const match = r.match(/\*\s*(\d+)/);
-    const multiplier = match ? parseInt(match[1], 10) : 1;
+    const mult = match ? parseInt(match[1], 10) : 1;
     if (r.includes('SUMAR ANCHO Y MULTIPLICAR ALTO'))
-      return ancho + alto * multiplier;
-    if (r.includes('SUMAR ANCHO Y ALTO')) return (ancho + alto) * multiplier;
-    if (r.includes('SUMAR ALTO')) return alto * multiplier;
-    return (ancho + alto) * multiplier;
+      return ancho + alto * mult;
+    if (r.includes('SUMAR ANCHO Y ALTO')) return (ancho + alto) * mult;
+    if (r.includes('SUMAR ALTO')) return alto * mult;
+    return (ancho + alto) * mult;
   }
 
   public getIndividualCutsFromMeasures(
@@ -602,17 +641,17 @@ export class CostCalculatorService {
   ): number[] {
     const r = rule.toUpperCase().trim();
     const match = r.match(/\*\s*(\d+)/);
-    const multiplier = match ? parseInt(match[1], 10) : 1;
+    const mult = match ? parseInt(match[1], 10) : 1;
     const cuts: number[] = [];
 
     if (r.includes('SUMAR ANCHO Y MULTIPLICAR ALTO')) {
       cuts.push(ancho);
-      for (let i = 0; i < multiplier; i++) cuts.push(alto);
+      for (let i = 0; i < mult; i++) cuts.push(alto);
     } else if (r.includes('ANCHO') && r.includes('ALTO')) {
-      const repeatCount = multiplier / 2;
+      const repeatCount = mult / 2;
       for (let i = 0; i < repeatCount; i++) cuts.push(ancho, alto);
     } else if (r.includes('ALTO')) {
-      for (let i = 0; i < multiplier; i++) cuts.push(alto);
+      for (let i = 0; i < mult; i++) cuts.push(alto);
     }
 
     return cuts.map((c) => Number(c.toFixed(1)));
@@ -624,8 +663,8 @@ export class CostCalculatorService {
     esBlanco: boolean,
     quantity: number,
     detalle: MaterialCostLine[],
+    conMosquitero: boolean,
   ): Promise<void> {
-    // Usar cache — las reglas de accesorios no cambian en runtime
     const rules = await this.getAccessoryRules(window_type_id);
 
     for (const rule of rules) {
@@ -634,7 +673,20 @@ export class CostCalculatorService {
         rule.option_group &&
         rule.option_key &&
         options[rule.option_group] === rule.option_key;
+
       if (!esFija && !aplicaCondicional) continue;
+
+      // ── Si el mosquitero está desactivado, omitir accesorios de mosquitero ─
+      // Identificamos accesorios de mosquitero por nombre
+      if (!conMosquitero) {
+        const nombreUpper = rule.material.name.toUpperCase();
+        if (
+          nombreUpper.includes('MOSQUITERO') ||
+          nombreUpper.includes('CEDAZO') ||
+          nombreUpper.includes('MAYA')
+        )
+          continue;
+      }
 
       const precio = esBlanco
         ? (rule.material.price_white ?? 0)

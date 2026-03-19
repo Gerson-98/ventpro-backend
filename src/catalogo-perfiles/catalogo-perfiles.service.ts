@@ -14,6 +14,9 @@ const FULL_INCLUDE = {
   perfilMosquitero: { select: { id: true, name: true } },
   perfilBatiente: { select: { id: true, name: true } },
   perfilTapajamba: { select: { id: true, name: true } },
+  // ── NUEVOS ──────────────────────────────────────────────────────────────
+  refuerzoHoja: { select: { id: true, name: true } },
+  refuerzoMosquitero: { select: { id: true, name: true } },
 };
 
 @Injectable()
@@ -59,11 +62,7 @@ export class CatalogoPerfilesService {
 
   async update(id: number, dto: UpdateCatalogoPerfilesDto) {
     await this.findOne(id);
-
-    // Prisma no acepta window_type_id en el data del update — es una FK
-    // que quedó fija al crear el registro. Se excluye antes de pasar a Prisma.
     const { window_type_id, ...data } = dto as any;
-
     return this.prisma.catalogoPerfiles.update({
       where: { id },
       data,

@@ -104,6 +104,8 @@ model Material {
   catalogoMosquiteros CatalogoPerfiles[] @relation("mosquitero_relation")
   catalogoBatientes   CatalogoPerfiles[] @relation("batiente_relation")
   catalogoTapajambas  CatalogoPerfiles[] @relation("tapajamba_relation")
+  catalogoRefuerzosHoja       CatalogoPerfiles[] @relation("refuerzo_hoja_relation")
+  catalogoRefuerzosMosquitero CatalogoPerfiles[] @relation("refuerzo_mosquitero_relation")
   accessoryRules      AccessoryRule[]
   glassColors         GlassColor[]
 
@@ -233,17 +235,21 @@ model CatalogoPerfiles {
   window_type_id Int        @unique
   windowType     WindowType @relation(fields: [window_type_id], references: [id], onDelete: Cascade)
 
-  perfil_marco_id      Int?
-  perfil_hoja_id       Int?
-  perfil_mosquitero_id Int?
-  perfil_batiente_id   Int?
-  perfil_tapajamba_id  Int?
+  perfil_marco_id        Int?
+  perfil_hoja_id         Int?
+  perfil_mosquitero_id   Int?
+  perfil_batiente_id     Int?
+  perfil_tapajamba_id    Int?
+  refuerzo_hoja_id       Int?
+  refuerzo_mosquitero_id Int?
 
-  perfilMarco      Material? @relation("marco_relation",      fields: [perfil_marco_id],      references: [id])
-  perfilHoja       Material? @relation("hoja_relation",       fields: [perfil_hoja_id],       references: [id])
-  perfilMosquitero Material? @relation("mosquitero_relation", fields: [perfil_mosquitero_id], references: [id])
-  perfilBatiente   Material? @relation("batiente_relation",   fields: [perfil_batiente_id],   references: [id])
-  perfilTapajamba  Material? @relation("tapajamba_relation",  fields: [perfil_tapajamba_id],  references: [id])
+  perfilMarco        Material? @relation("marco_relation",                fields: [perfil_marco_id],        references: [id])
+  perfilHoja         Material? @relation("hoja_relation",                 fields: [perfil_hoja_id],         references: [id])
+  perfilMosquitero   Material? @relation("mosquitero_relation",           fields: [perfil_mosquitero_id],   references: [id])
+  perfilBatiente     Material? @relation("batiente_relation",             fields: [perfil_batiente_id],     references: [id])
+  perfilTapajamba    Material? @relation("tapajamba_relation",            fields: [perfil_tapajamba_id],    references: [id])
+  refuerzoHoja       Material? @relation("refuerzo_hoja_relation",        fields: [refuerzo_hoja_id],       references: [id])
+  refuerzoMosquitero Material? @relation("refuerzo_mosquitero_relation",  fields: [refuerzo_mosquitero_id], references: [id])
 
   regla_marco      String?
   regla_hoja       String?
@@ -251,14 +257,7 @@ model CatalogoPerfiles {
   regla_batiente   String?
   regla_tapajamba  String?
 
-  cant_vidrios Int?
-
-  // Sobrescrituras de reglas según opción elegida por el usuario.
-  // Mismo patrón que calculationOverrides en WindowCalculation.
-  // Estructura: { "option_value_key": { "regla_campo": "NUEVA REGLA" } }
-  // Ejemplo:
-  //   { "laterales_ocultos": { "regla_mosquitero": "SUMAR ANCHO Y ALTO Y *4" },
-  //     "tres_iguales":      { "regla_mosquitero": "SUMAR ANCHO Y ALTO Y *2" } }
+  cant_vidrios  Int?
   ruleOverrides Json?
 
   @@map("catalogo_perfiles")
