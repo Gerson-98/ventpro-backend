@@ -2,6 +2,7 @@
 
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { AppSettingsService } from '../app-settings/app-settings.service';
 
 interface WindowCostInput {
   window_type_id: number;
@@ -65,7 +66,10 @@ interface CacheEntry<T> {
 
 @Injectable()
 export class CostCalculatorService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private appSettings: AppSettingsService,
+  ) {}
 
   private pvcColorCache = new Map<number, CacheEntry<any>>();
   private windowTypeCache = new Map<number, CacheEntry<any>>();
@@ -411,12 +415,16 @@ export class CostCalculatorService {
       .reduce((s, d) => s + d.costo_total, 0);
     const costo_total = costo_perfiles + costo_vidrio + costo_accesorios;
 
+    // Leer margen desde AppSettings — configurable por admin
+    const margenDecimal = (await this.appSettings.getProfitMargin()) / 100;
+    const margenDivisor = Math.max(0.01, Math.min(0.99, 1 - margenDecimal));
+
     return {
       costo_perfiles,
       costo_vidrio,
       costo_accesorios,
       costo_total,
-      precio_sugerido_minimo: costo_total / MARGEN_MINIMO,
+      precio_sugerido_minimo: costo_total / margenDivisor,
       detalle,
     };
   }
@@ -715,9 +723,11 @@ export class CostCalculatorService {
       (s, r) => s + r.costo_total,
       0,
     );
+    const margenDecimal = (await this.appSettings.getProfitMargin()) / 100;
+    const margenDivisor = Math.max(0.01, Math.min(0.99, 1 - margenDecimal));
     return {
       costo_total_proyecto,
-      precio_sugerido_minimo: costo_total_proyecto / MARGEN_MINIMO,
+      precio_sugerido_minimo: costo_total_proyecto / margenDivisor,
       por_ventana: resultados,
     };
   }

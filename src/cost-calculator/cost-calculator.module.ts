@@ -1,12 +1,15 @@
+// RUTA: src/cost-calculator/cost-calculator.module.ts
+
 import { Module } from '@nestjs/common';
 import { CostCalculatorService } from './cost-calculator.service';
 import { CostCalculatorController } from './cost-calculator.controller';
-import { PrismaModule } from '../prisma/prisma.module';
+import { PrismaService } from '../prisma/prisma.service';
+import { AppSettingsModule } from '../app-settings/app-settings.module';
 
 @Module({
-  imports: [PrismaModule],
+  imports: [AppSettingsModule],
   controllers: [CostCalculatorController],
-  providers: [CostCalculatorService],
-  exports: [CostCalculatorService], // Lo exportamos para que QuotationsModule lo pueda usar
+  providers: [CostCalculatorService, PrismaService],
+  exports: [CostCalculatorService],
 })
 export class CostCalculatorModule {}
