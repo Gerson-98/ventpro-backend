@@ -54,8 +54,13 @@ export class CatalogoPerfilesService {
       throw new ConflictException(
         `Ya existe un catálogo para el tipo de ventana #${dto.window_type_id}. Usa PATCH para actualizar.`,
       );
+
+    const { ruleOverrides, ...rest } = dto as any;
     return this.prisma.catalogoPerfiles.create({
-      data: dto,
+      data: {
+        ...rest,
+        ruleOverrides: ruleOverrides ?? undefined,
+      },
       include: FULL_INCLUDE,
     });
   }
