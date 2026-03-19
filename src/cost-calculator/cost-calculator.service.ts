@@ -354,13 +354,9 @@ export class CostCalculatorService {
         }
       }
 
-      // ── Vidrio: solo si tiene mosquitero (el mosquitero define el área de vidrio) ─
-      if (
-        conMosquitero &&
-        cantVidrios &&
-        cantVidrios > 0 &&
-        input.glass_color_id
-      ) {
+      // ── Vidrio: siempre se calcula si la ventana tiene vidrios configurados ──
+      // El mosquitero es independiente — el vidrio siempre va en la ventana
+      if (cantVidrios && cantVidrios > 0 && input.glass_color_id) {
         const glassColor = await this.prisma.glassColor.findUnique({
           where: { id: input.glass_color_id },
           include: { material: true },

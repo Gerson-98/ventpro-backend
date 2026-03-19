@@ -340,21 +340,19 @@ export class ReportsService {
               totalDuelaLength * windowQuantity;
           }
         } else if (glassNameUpper !== 'VIDRIO Y DUELA') {
-          // Solo calcular vidrio si tiene mosquitero
-          if (conMosquitero) {
-            const glassMaterial = materialsMap.get(window.glassColor.name);
-            if (glassMaterial && vidrioAncho > 0 && vidrioAlto > 0) {
-              const key = glassMaterial.name;
-              const glassCount = cantVidrios ?? 1;
-              const glassArea =
-                vidrioAncho * vidrioAlto * glassCount * windowQuantity;
-              const existing = glassReportMap.get(key) || {
-                material: glassMaterial,
-                totalArea: 0,
-              };
-              existing.totalArea += glassArea;
-              glassReportMap.set(key, existing);
-            }
+          // El vidrio siempre se calcula — independiente de si lleva mosquitero
+          const glassMaterial = materialsMap.get(window.glassColor.name);
+          if (glassMaterial && vidrioAncho > 0 && vidrioAlto > 0) {
+            const key = glassMaterial.name;
+            const glassCount = cantVidrios ?? 1;
+            const glassArea =
+              vidrioAncho * vidrioAlto * glassCount * windowQuantity;
+            const existing = glassReportMap.get(key) || {
+              material: glassMaterial,
+              totalArea: 0,
+            };
+            existing.totalArea += glassArea;
+            glassReportMap.set(key, existing);
           }
         }
       }
@@ -694,11 +692,6 @@ export class ReportsService {
 
       const catalogEntry = catalogMap.get(window.window_type_id);
       const options = (window.options as any) || {};
-      const conMosquitero = this.costCalculator.tieneMosquitero(
-        options,
-        catalogEntry,
-      );
-      if (!conMosquitero) continue; // sin mosquitero no hay vidrio
 
       const reglas = catalogEntry
         ? this.costCalculator.aplicarRuleOverrides(catalogEntry, options)
