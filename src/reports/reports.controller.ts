@@ -41,6 +41,14 @@ export class ReportsController {
     return this.reportsService.generateGlassCutReport(orderId);
   }
 
+  // ─── NUEVO: Glass cut para cotizaciones ─────────────────────────────────────
+  @Get('quotation/:quotationId/glass-cuts')
+  generateGlassCutByQuotation(
+    @Param('quotationId', ParseIntPipe) quotationId: number,
+  ) {
+    return this.reportsService.generateGlassCutByQuotation(quotationId);
+  }
+
   // ─── NUEVO: Resumen financiero de un pedido específico ──────────────────
   @Get('order/:orderId/financial')
   getOrderFinancialSummary(@Param('orderId', ParseIntPipe) orderId: number) {

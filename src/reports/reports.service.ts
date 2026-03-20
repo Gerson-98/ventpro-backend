@@ -660,8 +660,34 @@ export class ReportsService {
       },
     });
     if (!order) throw new NotFoundException(`Pedido #${orderId} no encontrado`);
+    return this.buildGlassCutData(order.windows);
+  }
 
-    const enrichedWindows = await this.enrichWindowMeasures(order.windows);
+  async generateGlassCutByQuotation(quotationId: number) {
+    const quotation = await this.prisma.quotation.findUnique({
+      where: { id: quotationId },
+      include: {
+        quotation_windows: {
+          include: { windowType: true, pvcColor: true, glassColor: true },
+        },
+      },
+    });
+    if (!quotation)
+      throw new NotFoundException(`Cotización #${quotationId} no encontrada`);
+    const normalizedWindows = quotation.quotation_windows.map((qw) => ({
+      ...qw,
+      window_type_id: qw.window_type_id,
+      windowType: qw.windowType,
+      pvcColor: qw.pvcColor,
+      glassColor: qw.glassColor,
+      options: qw.options || {},
+      quantity: qw.quantity || 1,
+    }));
+    return this.buildGlassCutData(normalizedWindows);
+  }
+
+  private async buildGlassCutData(windows: any[]) {
+    const enrichedWindows = await this.enrichWindowMeasures(windows);
     const catalogMap = new Map(
       (await this.prisma.catalogoPerfiles.findMany()).map((p) => [
         p.window_type_id,
@@ -669,30 +695,31 @@ export class ReportsService {
       ]),
     );
 
-    const PLANCHA_WIDTH = 213;
-    const PLANCHA_HEIGHT = 165.8;
-
     interface GlassPiece {
       width: number;
       height: number;
       windowLabel: string;
       quantity: number;
     }
-    const glassByType = new Map<
-      string,
-      { glassName: string; pieces: GlassPiece[] }
-    >();
+    interface GlassGroup {
+      glassName: string;
+      sheetWidth: number;
+      sheetHeight: number;
+      pieces: GlassPiece[];
+    }
+    const glassByType = new Map<string, GlassGroup>();
 
     for (let wi = 0; wi < enrichedWindows.length; wi++) {
       const window = enrichedWindows[wi];
       if (!window || !window.glassColor) continue;
-
       const glassName = window.glassColor.name;
       if (glassName.toUpperCase().includes('DUELA')) continue;
 
+      const sheetWidth = Number(window.glassColor.sheet_width ?? 213);
+      const sheetHeight = Number(window.glassColor.sheet_height ?? 165.8);
+
       const catalogEntry = catalogMap.get(window.window_type_id);
       const options = (window.options as any) || {};
-
       const reglas = catalogEntry
         ? this.costCalculator.aplicarRuleOverrides(catalogEntry, options)
         : null;
@@ -705,10 +732,14 @@ export class ReportsService {
 
       const windowLabel = `V${wi + 1}`;
       const windowQuantity = window.quantity || 1;
-
       const key = glassName;
       if (!glassByType.has(key))
-        glassByType.set(key, { glassName, pieces: [] });
+        glassByType.set(key, {
+          glassName,
+          sheetWidth,
+          sheetHeight,
+          pieces: [],
+        });
       glassByType.get(key)!.pieces.push({
         width: Number(vidrioAncho.toFixed(1)),
         height: Number(vidrioAlto.toFixed(1)),
@@ -719,20 +750,34 @@ export class ReportsService {
 
     const result: any = {};
     for (const [key, value] of glassByType.entries()) {
-      const totalPieces = value.pieces.reduce((s, p) => s + p.quantity, 0);
-      const totalArea = value.pieces.reduce(
+      const { sheetWidth, sheetHeight, pieces } = value;
+      const expandedPieces: { width: number; height: number; label: string }[] =
+        [];
+      for (const p of pieces) {
+        for (let q = 0; q < p.quantity; q++) {
+          expandedPieces.push({
+            width: p.width,
+            height: p.height,
+            label: p.windowLabel,
+          });
+        }
+      }
+      const sheets = guillotinePack(expandedPieces, sheetWidth, sheetHeight);
+      const totalPieces = pieces.reduce((s, p) => s + p.quantity, 0);
+      const totalArea = pieces.reduce(
         (s, p) => s + p.width * p.height * p.quantity,
         0,
       );
-      const planchaArea = PLANCHA_WIDTH * PLANCHA_HEIGHT;
-      const minPlanchas = Math.ceil(totalArea / planchaArea);
       result[key] = {
         glassName: value.glassName,
-        planchaSize: `${PLANCHA_WIDTH} × ${PLANCHA_HEIGHT} cm`,
-        pieces: value.pieces,
+        sheetWidth,
+        sheetHeight,
+        planchaSize: `${sheetWidth} × ${sheetHeight} cm`,
+        pieces,
         totalPieces,
         totalArea: Number(totalArea.toFixed(1)),
-        minPlanchas,
+        minPlanchas: sheets.length,
+        sheets,
       };
     }
     return result;
@@ -1267,4 +1312,142 @@ export class ReportsService {
     }
     return bins.map((bin) => bin.cuts);
   }
+}
+
+// ── Algoritmo Guillotine Shelf para optimización 2D de vidrio ────────────────
+// Divide la plancha en "estantes" horizontales. Cada pieza se coloca en el
+// primer estante donde cabe. Si no cabe en ninguno, abre una plancha nueva.
+// Retorna un array de planchas, cada una con las piezas y sus coordenadas (x, y).
+function guillotinePack(
+  pieces: { width: number; height: number; label: string }[],
+  sheetW: number,
+  sheetH: number,
+): {
+  pieces: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    label: string;
+  }[];
+}[] {
+  // Ordenar piezas de mayor a menor altura para mejor aprovechamiento
+  const sorted = [...pieces].sort(
+    (a, b) => b.height - a.height || b.width - a.width,
+  );
+
+  interface Shelf {
+    y: number; // posición Y del estante
+    height: number; // altura del estante (= altura de la primera pieza colocada)
+    usedX: number; // cuánto ancho se ha usado
+  }
+
+  interface Sheet {
+    shelves: Shelf[];
+    pieces: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+      label: string;
+    }[];
+  }
+
+  const sheets: Sheet[] = [];
+
+  const newSheet = (): Sheet => ({ shelves: [], pieces: [] });
+
+  const tryPlace = (
+    sheet: Sheet,
+    piece: { width: number; height: number; label: string },
+  ): boolean => {
+    // Intentar colocar en estante existente
+    for (const shelf of sheet.shelves) {
+      const remainingX = sheetW - shelf.usedX;
+      // Intentar sin rotar
+      if (piece.width <= remainingX && piece.height <= shelf.height) {
+        sheet.pieces.push({
+          x: shelf.usedX,
+          y: shelf.y,
+          width: piece.width,
+          height: piece.height,
+          label: piece.label,
+        });
+        shelf.usedX += piece.width;
+        return true;
+      }
+      // Intentar rotado (90°)
+      if (piece.height <= remainingX && piece.width <= shelf.height) {
+        sheet.pieces.push({
+          x: shelf.usedX,
+          y: shelf.y,
+          width: piece.height,
+          height: piece.width,
+          label: piece.label,
+        });
+        shelf.usedX += piece.height;
+        return true;
+      }
+    }
+
+    // Calcular Y disponible para nuevo estante
+    const usedY =
+      sheet.shelves.length > 0
+        ? sheet.shelves[sheet.shelves.length - 1].y +
+          sheet.shelves[sheet.shelves.length - 1].height
+        : 0;
+
+    // Intentar abrir nuevo estante sin rotar
+    if (piece.width <= sheetW && usedY + piece.height <= sheetH) {
+      const shelf: Shelf = {
+        y: usedY,
+        height: piece.height,
+        usedX: piece.width,
+      };
+      sheet.shelves.push(shelf);
+      sheet.pieces.push({
+        x: 0,
+        y: usedY,
+        width: piece.width,
+        height: piece.height,
+        label: piece.label,
+      });
+      return true;
+    }
+    // Intentar rotado en nuevo estante
+    if (piece.height <= sheetW && usedY + piece.width <= sheetH) {
+      const shelf: Shelf = {
+        y: usedY,
+        height: piece.width,
+        usedX: piece.height,
+      };
+      sheet.shelves.push(shelf);
+      sheet.pieces.push({
+        x: 0,
+        y: usedY,
+        width: piece.height,
+        height: piece.width,
+        label: piece.label,
+      });
+      return true;
+    }
+    return false;
+  };
+
+  for (const piece of sorted) {
+    let placed = false;
+    for (const sheet of sheets) {
+      if (tryPlace(sheet, piece)) {
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) {
+      const sheet = newSheet();
+      sheets.push(sheet);
+      tryPlace(sheet, piece);
+    }
+  }
+
+  return sheets.map((s) => ({ pieces: s.pieces }));
 }

@@ -117,14 +117,20 @@ model Material {
 // ─────────────────────────────────────────────────────────────────────────────
 
 model GlassColor {
-  id                Int               @id @default(autoincrement())
-  name              String            @unique
-  description       String?
-  material_id       Int?
-  material          Material?         @relation(fields: [material_id], references: [id])
-  windows           Window[]
+  id          Int       @id @default(autoincrement())
+  name        String    @unique
+  description String?
+  material_id Int?
+  material    Material? @relation(fields: [material_id], references: [id])
+ 
+  // ── NUEVOS: medidas de plancha estándar para este tipo de vidrio ──────────
+  sheet_width  Float @default(213)
+  sheet_height Float @default(165.8)
+  // ──────────────────────────────────────────────────────────────────────────
+ 
   quotation_windows QuotationWindow[]
-
+  windows           Window[]
+ 
   @@map("glassColor")
 }
 
