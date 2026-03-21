@@ -295,12 +295,19 @@ export class CostCalculatorService {
       for (const { perfil, regla, ancho, alto, label, incluir } of perfiles) {
         if (!incluir || !perfil || !regla) continue;
 
-        const metrosTotales = this.applyRule(regla, ancho, alto);
-        const barras = metrosTotales / LARGO_BARRA_CM;
+        // ── Bin-packing real: genera los cortes individuales y los empaca ──
+        // Math.ceil(totalCm/580 * qty) subestima cuando la regla tiene
+        // multiplicador alto (ej: *4) porque no puede fraccionar barras.
+        const cortesPorVentana = this.getCutsFromRule(regla, ancho, alto);
+        const todosLosCortes: number[] = [];
+        for (let q = 0; q < quantity; q++) {
+          todosLosCortes.push(...cortesPorVentana);
+        }
+        const barrasEnteras = this.ffdBinPack(todosLosCortes, LARGO_BARRA_CM);
+
         const precio = esBlanco
           ? (perfil.price_white ?? 0)
           : (perfil.price_color ?? perfil.price_white ?? 0);
-        const barrasEnteras = Math.ceil(barras * quantity);
         const costoLinea = barrasEnteras * precio;
 
         detalle.push({
@@ -729,5 +736,53 @@ export class CostCalculatorService {
       precio_sugerido_minimo: costo_total_proyecto / margenDivisor,
       por_ventana: resultados,
     };
+  }
+
+  // ── Genera los cortes individuales de una barra según la regla ─────────────
+  // Idéntico a getCutsWithDimension del reports.service para consistencia.
+  private getCutsFromRule(
+    regla: string,
+    ancho: number,
+    alto: number,
+  ): number[] {
+    const r = regla.toUpperCase().trim();
+    const match = r.match(/\*\s*(\d+)/);
+    const mult = match ? parseInt(match[1], 10) : 2;
+    const cuts: number[] = [];
+    const a = Number(ancho.toFixed(1));
+    const h = Number(alto.toFixed(1));
+
+    if (r.includes('SUMAR ANCHO Y MULTIPLICAR ALTO')) {
+      cuts.push(a);
+      for (let i = 0; i < mult; i++) cuts.push(h);
+    } else if (r.includes('ANCHO') && r.includes('ALTO')) {
+      for (let i = 0; i < mult; i++) cuts.push(a);
+      for (let i = 0; i < mult; i++) cuts.push(h);
+    } else if (r.includes('ALTO')) {
+      for (let i = 0; i < mult; i++) cuts.push(h);
+    } else {
+      for (let i = 0; i < mult; i++) cuts.push(a);
+      for (let i = 0; i < mult; i++) cuts.push(h);
+    }
+    return cuts;
+  }
+
+  // ── First-Fit Decreasing bin-packing — devuelve número de barras ──────────
+  private ffdBinPack(cuts: number[], barLen: number): number {
+    const sorted = [...cuts].sort((a, b) => b - a);
+    const bins: number[] = []; // cada bin = espacio restante
+    for (const cut of sorted) {
+      if (cut > barLen) continue; // corte imposible — ignorar
+      let placed = false;
+      for (let i = 0; i < bins.length; i++) {
+        if (cut <= bins[i]) {
+          bins[i] -= cut;
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) bins.push(barLen - cut);
+    }
+    return bins.length || 1;
   }
 }
