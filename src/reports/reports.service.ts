@@ -101,7 +101,16 @@ export class ReportsService {
     }
     const profilesReportMap = new Map<string, ProfileAccum>();
     const accessoriesReportMap = new Map<string, any>();
-    const glassReportMap = new Map<string, any>();
+    // glassReportMap ahora guarda piezas individuales para usar guillotinePack
+    const glassReportMap = new Map<
+      string,
+      {
+        material: any;
+        sheetWidth: number;
+        sheetHeight: number;
+        pieces: { width: number; height: number; label: string }[];
+      }
+    >();
 
     const BAR_LENGTH_REPORT = 580;
 
@@ -345,14 +354,25 @@ export class ReportsService {
           if (glassMaterial && vidrioAncho > 0 && vidrioAlto > 0) {
             const key = glassMaterial.name;
             const glassCount = cantVidrios ?? 1;
-            const glassArea =
-              vidrioAncho * vidrioAlto * glassCount * windowQuantity;
-            const existing = glassReportMap.get(key) || {
-              material: glassMaterial,
-              totalArea: 0,
-            };
-            existing.totalArea += glassArea;
-            glassReportMap.set(key, existing);
+            const sheetWidth = Number(window.glassColor.sheet_width ?? 213);
+            const sheetHeight = Number(window.glassColor.sheet_height ?? 165.8);
+            if (!glassReportMap.has(key)) {
+              glassReportMap.set(key, {
+                material: glassMaterial,
+                sheetWidth,
+                sheetHeight,
+                pieces: [],
+              });
+            }
+            const entry = glassReportMap.get(key)!;
+            // Agregar una pieza por cada vidrio × cantidad de ventanas
+            for (let q = 0; q < glassCount * windowQuantity; q++) {
+              entry.pieces.push({
+                width: Number(vidrioAncho.toFixed(1)),
+                height: Number(vidrioAlto.toFixed(1)),
+                label: `V${enrichedWindows.indexOf(window) + 1}`,
+              });
+            }
           }
         }
       }
@@ -400,7 +420,13 @@ export class ReportsService {
 
     const glassReport = Array.from(glassReportMap.values()).map((item) => {
       const price = item.material.price_white || item.material.price_color || 0;
-      const planchas = Math.ceil(item.totalArea / 35310);
+      // Usar guillotinePack igual que buildGlassCutData para que coincidan los números
+      const sheets = guillotinePack(
+        item.pieces,
+        item.sheetWidth,
+        item.sheetHeight,
+      );
+      const planchas = sheets.length;
       return {
         tipo: 'VIDRIO',
         nombre: item.material.name,
