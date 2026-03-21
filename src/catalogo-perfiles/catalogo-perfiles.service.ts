@@ -6,6 +6,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCatalogoPerfilesDto } from './dto/create-catalogo-perfiles.dto';
 import { UpdateCatalogoPerfilesDto } from './dto/update-catalogo-perfiles.dto';
+import { CostCalculatorService } from '../cost-calculator/cost-calculator.service';
 
 const FULL_INCLUDE = {
   windowType: { select: { id: true, name: true } },
@@ -21,7 +22,10 @@ const FULL_INCLUDE = {
 
 @Injectable()
 export class CatalogoPerfilesService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private costCalculator: CostCalculatorService,
+  ) {}
 
   findAll() {
     return this.prisma.catalogoPerfiles.findMany({
@@ -56,27 +60,33 @@ export class CatalogoPerfilesService {
       );
 
     const { ruleOverrides, ...rest } = dto as any;
-    return this.prisma.catalogoPerfiles.create({
+    const result = await this.prisma.catalogoPerfiles.create({
       data: {
         ...rest,
         ruleOverrides: ruleOverrides ?? undefined,
       },
       include: FULL_INCLUDE,
     });
+    this.costCalculator.clearCache();
+    return result;
   }
 
   async update(id: number, dto: UpdateCatalogoPerfilesDto) {
     await this.findOne(id);
     const { window_type_id, ...data } = dto as any;
-    return this.prisma.catalogoPerfiles.update({
+    const result = await this.prisma.catalogoPerfiles.update({
       where: { id },
       data,
       include: FULL_INCLUDE,
     });
+    this.costCalculator.clearCache();
+    return result;
   }
 
   async remove(id: number) {
     await this.findOne(id);
-    return this.prisma.catalogoPerfiles.delete({ where: { id } });
+    const result = await this.prisma.catalogoPerfiles.delete({ where: { id } });
+    this.costCalculator.clearCache();
+    return result;
   }
 }
