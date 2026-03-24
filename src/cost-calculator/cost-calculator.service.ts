@@ -727,18 +727,20 @@ export class CostCalculatorService {
       windows.map((w) => this.calcularCostoVentana(w)),
     );
 
-    // 2. Acumular cortes de TODAS las ventanas por perfil y bin-packear globalmente.
-    //    Esto coincide con la lógica de reports.service.ts (processWindowsToReport)
-    //    y evita sobreestimar barras cuando las sobras de una ventana sirven para otra.
+    // 2. Costos globales: perfiles y vidrio se calculan con bin-packing/guillotine
+    //    global sobre TODAS las ventanas juntas, igual que processWindowsToReport
+    //    en reports.service.ts. Esto evita sobreestimar cuando las sobras de una
+    //    ventana sirven para otra (perfiles) o cuando varias piezas caben en una
+    //    misma plancha (vidrio).
     const costoGlobalPerfiles = await this.calcularCostoPerfilesGlobal(windows);
+    const costoGlobalVidrio = await this.calcularCostoVidrioGlobal(windows);
     const costoAccesorios = resultados.reduce(
       (s, r) => s + r.costo_accesorios,
       0,
     );
-    const costoVidrio = resultados.reduce((s, r) => s + r.costo_vidrio, 0);
 
     const costo_total_proyecto =
-      costoGlobalPerfiles + costoAccesorios + costoVidrio;
+      costoGlobalPerfiles + costoAccesorios + costoGlobalVidrio;
     const margenDecimal = (await this.appSettings.getProfitMargin()) / 100;
     const margenDivisor = Math.max(0.01, Math.min(0.99, 1 - margenDecimal));
 
@@ -958,5 +960,190 @@ export class CostCalculatorService {
       if (!placed) bins.push(barLen - cut);
     }
     return bins.length || 1;
+  }
+
+  // ── Guillotine Shelf 2D — misma lógica que guillotinePack en reports.service.
+  //    Solo devuelve el número de planchas (sin coordenadas visuales).
+  private guillotinePackCount(
+    pieces: { width: number; height: number }[],
+    sheetW: number,
+    sheetH: number,
+  ): number {
+    const sorted = [...pieces].sort(
+      (a, b) => b.height - a.height || b.width - a.width,
+    );
+
+    interface Shelf {
+      y: number;
+      height: number;
+      usedX: number;
+    }
+    interface Sheet {
+      shelves: Shelf[];
+    }
+
+    const sheets: Sheet[] = [];
+    const newSheet = (): Sheet => ({ shelves: [] });
+
+    const tryPlace = (
+      sheet: Sheet,
+      piece: { width: number; height: number },
+    ): boolean => {
+      for (const shelf of sheet.shelves) {
+        const remainingX = sheetW - shelf.usedX;
+        // Sin rotar
+        if (piece.width <= remainingX && piece.height <= shelf.height) {
+          shelf.usedX += piece.width;
+          return true;
+        }
+        // Rotado 90°
+        if (piece.height <= remainingX && piece.width <= shelf.height) {
+          shelf.usedX += piece.height;
+          return true;
+        }
+      }
+      const usedY =
+        sheet.shelves.length > 0
+          ? sheet.shelves[sheet.shelves.length - 1].y +
+            sheet.shelves[sheet.shelves.length - 1].height
+          : 0;
+      // Nuevo estante sin rotar
+      if (piece.width <= sheetW && usedY + piece.height <= sheetH) {
+        sheet.shelves.push({
+          y: usedY,
+          height: piece.height,
+          usedX: piece.width,
+        });
+        return true;
+      }
+      // Nuevo estante rotado
+      if (piece.height <= sheetW && usedY + piece.width <= sheetH) {
+        sheet.shelves.push({
+          y: usedY,
+          height: piece.width,
+          usedX: piece.height,
+        });
+        return true;
+      }
+      return false;
+    };
+
+    for (const piece of sorted) {
+      let placed = false;
+      for (const sheet of sheets) {
+        if (tryPlace(sheet, piece)) {
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) {
+        const sheet = newSheet();
+        sheets.push(sheet);
+        tryPlace(sheet, piece);
+      }
+    }
+    return sheets.length || 0;
+  }
+
+  // ── Acumula piezas de vidrio de TODAS las ventanas y calcula planchas con
+  //    guillotinePackCount — igual que processWindowsToReport en reports.service.
+  //    Garantiza que el costo de vidrio del modal coincida con el ProfilesReport.
+  private async calcularCostoVidrioGlobal(
+    windows: WindowCostInput[],
+  ): Promise<number> {
+    // glass_color_id → { precio, sheetWidth, sheetHeight, pieces[] }
+    const glassMap = new Map<
+      number,
+      {
+        precio: number;
+        sheetWidth: number;
+        sheetHeight: number;
+        pieces: { width: number; height: number }[];
+      }
+    >();
+
+    for (const win of windows) {
+      const {
+        window_type_id,
+        width_cm,
+        height_cm,
+        color_id,
+        glass_color_id,
+        options = {},
+        quantity = 1,
+      } = win;
+
+      if (!glass_color_id) continue;
+
+      const pvcColor = await this.getPvcColor(color_id);
+      const esBlanco = pvcColor
+        ? pvcColor.name.toUpperCase().includes('BLANCO')
+        : false;
+
+      const catalogo = await this.getCatalogo(window_type_id);
+      if (!catalogo) continue;
+
+      const calcParams = await this.getCalcParams(window_type_id);
+      const { hojaAncho, hojaAlto, vidrioDescuento } = this.calcularMedidasHoja(
+        width_cm,
+        height_cm,
+        calcParams,
+        options,
+      );
+
+      const mosquiteroAncho = Number((hojaAncho - vidrioDescuento).toFixed(2));
+      const mosquiteroAlto = Number((hojaAlto - vidrioDescuento).toFixed(2));
+
+      if (mosquiteroAncho <= 0 || mosquiteroAlto <= 0) continue;
+
+      const reglas = this.aplicarRuleOverrides(catalogo, options);
+      const cantVidrios = reglas.cant_vidrios ?? catalogo.cant_vidrios;
+      if (!cantVidrios || cantVidrios <= 0) continue;
+
+      // Inicializar entrada del mapa la primera vez que aparece este glassColor
+      if (!glassMap.has(glass_color_id)) {
+        const glassColor = await this.prisma.glassColor.findUnique({
+          where: { id: glass_color_id },
+          include: { material: true },
+        });
+        if (!glassColor?.material) continue;
+
+        const precio = esBlanco
+          ? (glassColor.material.price_white ??
+            glassColor.material.price_color ??
+            0)
+          : (glassColor.material.price_color ??
+            glassColor.material.price_white ??
+            0);
+
+        glassMap.set(glass_color_id, {
+          precio,
+          sheetWidth: Number(glassColor.sheet_width ?? 213),
+          sheetHeight: Number(glassColor.sheet_height ?? 165.8),
+          pieces: [],
+        });
+      }
+
+      const entry = glassMap.get(glass_color_id)!;
+      // Una pieza por cada vidrio × cantidad de ventanas (igual que el reporte)
+      for (let q = 0; q < cantVidrios * quantity; q++) {
+        entry.pieces.push({
+          width: Number(mosquiteroAncho.toFixed(1)),
+          height: Number(mosquiteroAlto.toFixed(1)),
+        });
+      }
+    }
+
+    let costoTotal = 0;
+    for (const [, { precio, sheetWidth, sheetHeight, pieces }] of glassMap) {
+      if (pieces.length === 0) continue;
+      const planchas = this.guillotinePackCount(
+        pieces,
+        sheetWidth,
+        sheetHeight,
+      );
+      costoTotal += planchas * precio;
+    }
+    return costoTotal;
   }
 }
