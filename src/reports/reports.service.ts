@@ -530,30 +530,31 @@ export class ReportsService {
     status?: string;
     userId?: number;
   }) {
-    const where: any = {};
+    const orderWhere: any = {};
 
     if (filters.status && filters.status !== 'todos') {
-      where.status = filters.status;
+      orderWhere.status = filters.status;
     } else {
-      where.status = { not: 'cancelado' };
+      orderWhere.status = { not: 'cancelado' };
     }
 
     if (filters.fromDate || filters.toDate) {
-      where.createdAt = {};
-      if (filters.fromDate) where.createdAt.gte = new Date(filters.fromDate);
+      orderWhere.createdAt = {};
+      if (filters.fromDate)
+        orderWhere.createdAt.gte = new Date(filters.fromDate);
       if (filters.toDate) {
         const to = new Date(filters.toDate);
         to.setHours(23, 59, 59, 999);
-        where.createdAt.lte = to;
+        orderWhere.createdAt.lte = to;
       }
     }
 
     if (filters.userId) {
-      where.generatedFromQuotation = { userId: filters.userId };
+      orderWhere.generatedFromQuotation = { userId: filters.userId };
     }
 
     const orders = await this.prisma.order.findMany({
-      where,
+      where: orderWhere,
       select: {
         id: true,
         project: true,
@@ -563,6 +564,9 @@ export class ReportsService {
         createdAt: true,
         installationStartDate: true,
         client: { select: { name: true } },
+        generatedFromQuotation: {
+          select: { user: { select: { id: true, name: true } } },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -578,6 +582,7 @@ export class ReportsService {
             orderId: order.id,
             project: order.project,
             client: order.client?.name || '—',
+            seller: order.generatedFromQuotation?.user?.name || '—',
             status: order.status,
             salePrice,
             materialCost,
@@ -592,6 +597,7 @@ export class ReportsService {
             orderId: order.id,
             project: order.project,
             client: order.client?.name || '—',
+            seller: order.generatedFromQuotation?.user?.name || '—',
             status: order.status,
             salePrice,
             materialCost: 0,
@@ -603,6 +609,49 @@ export class ReportsService {
         }
       }),
     );
+
+    // Cotizaciones para monitor de comisiones por vendedor
+    const quotationWhere: any = {};
+    if (filters.userId) quotationWhere.userId = filters.userId;
+    if (filters.fromDate || filters.toDate) {
+      quotationWhere.createdAt = {};
+      if (filters.fromDate)
+        quotationWhere.createdAt.gte = new Date(filters.fromDate);
+      if (filters.toDate) {
+        const to = new Date(filters.toDate);
+        to.setHours(23, 59, 59, 999);
+        quotationWhere.createdAt.lte = to;
+      }
+    }
+
+    const quotations = await this.prisma.quotation.findMany({
+      where: quotationWhere,
+      select: {
+        id: true,
+        quotationNumber: true,
+        project: true,
+        status: true,
+        total_price: true,
+        createdAt: true,
+        client: { select: { name: true } },
+        user: { select: { id: true, name: true } },
+        generatedOrder: { select: { id: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const quotationSummaries = quotations.map((q) => ({
+      quotationId: q.id,
+      quotationNumber: q.quotationNumber,
+      project: q.project,
+      client: q.client?.name || '—',
+      seller: q.user?.name || '—',
+      status: q.status,
+      totalPrice: q.total_price || 0,
+      convertedToOrder: !!q.generatedOrder,
+      orderId: q.generatedOrder?.id || null,
+      createdAt: q.createdAt,
+    }));
 
     const totals = summaries.reduce(
       (acc, s) => ({
@@ -652,17 +701,21 @@ export class ReportsService {
 
     return {
       orders: summaries,
+      quotations: quotationSummaries,
       totals: {
         totalSales: Number(totals.totalSales.toFixed(2)),
         totalMaterialCost: Number(totals.totalMaterialCost.toFixed(2)),
         totalProfit: Number(totals.totalProfit.toFixed(2)),
         avgMargin: Number(avgMargin.toFixed(2)),
         orderCount: summaries.length,
+        quotationCount: quotationSummaries.length,
+        quotationsConverted: quotationSummaries.filter(
+          (q) => q.convertedToOrder,
+        ).length,
       },
       monthlyData,
     };
   }
-
   async generateCutOptimizationReport(orderId: number) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
