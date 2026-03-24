@@ -28,7 +28,10 @@ export class OrdersService {
     return user.role === 'ADMIN';
   }
 
-  private async assertOwnership(orderId: number, user: AuthUser): Promise<void> {
+  private async assertOwnership(
+    orderId: number,
+    user: AuthUser,
+  ): Promise<void> {
     if (this.isAdmin(user)) return;
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
@@ -109,11 +112,28 @@ export class OrdersService {
       filters.search && filters.search.trim()
         ? {
             OR: [
-              { project: { contains: filters.search, mode: 'insensitive' as const } },
-              { client: { name: { contains: filters.search, mode: 'insensitive' as const } } },
+              {
+                project: {
+                  contains: filters.search,
+                  mode: 'insensitive' as const,
+                },
+              },
+              {
+                client: {
+                  name: {
+                    contains: filters.search,
+                    mode: 'insensitive' as const,
+                  },
+                },
+              },
               {
                 generatedFromQuotation: {
-                  user: { name: { contains: filters.search, mode: 'insensitive' as const } },
+                  user: {
+                    name: {
+                      contains: filters.search,
+                      mode: 'insensitive' as const,
+                    },
+                  },
                 },
               },
             ],
@@ -176,9 +196,7 @@ export class OrdersService {
       !this.isAdmin(user) &&
       order.generatedFromQuotation?.userId !== user.id
     ) {
-      throw new ForbiddenException(
-        'No tienes permiso para ver este pedido.',
-      );
+      throw new ForbiddenException('No tienes permiso para ver este pedido.');
     }
     return order;
   }
@@ -266,27 +284,20 @@ export class OrdersService {
   // Admin: todos los pedidos agendados (calendario completo)
   // Vendedor: solo sus pedidos agendados
   async findScheduled(user: AuthUser) {
-    const whereClause = this.isAdmin(user)
-      ? {
-          installationStartDate: { not: null },
-          status: { not: OrderStatus.cancelado },
-        }
-      : {
-          installationStartDate: { not: null },
-          status: { not: OrderStatus.cancelado },
-          generatedFromQuotation: {
-            userId: user.id,
-          },
-        };
-
     return this.prisma.order.findMany({
-      where: whereClause,
+      where: {
+        installationStartDate: { not: null },
+        status: { not: OrderStatus.cancelado },
+      },
       select: {
         id: true,
         project: true,
         installationStartDate: true,
         installationEndDate: true,
         status: true,
+        client: {
+          select: { name: true },
+        },
       },
       orderBy: { installationStartDate: 'asc' },
     });
@@ -311,7 +322,11 @@ export class OrdersService {
   }
 
   // ─── reschedule ───────────────────────────────────────────────────────────
-  async reschedule(id: number, rescheduleOrderDto: RescheduleOrderDto, user: AuthUser) {
+  async reschedule(
+    id: number,
+    rescheduleOrderDto: RescheduleOrderDto,
+    user: AuthUser,
+  ) {
     await this.assertOwnership(id, user);
 
     const { installationStartDate, installationEndDate } = rescheduleOrderDto;
@@ -333,7 +348,11 @@ export class OrdersService {
   }
 
   // ─── updateStatus ─────────────────────────────────────────────────────────
-  async updateStatus(id: number, updateOrderStatusDto: UpdateOrderStatusDto, user: AuthUser) {
+  async updateStatus(
+    id: number,
+    updateOrderStatusDto: UpdateOrderStatusDto,
+    user: AuthUser,
+  ) {
     await this.assertOwnership(id, user);
 
     const newStatus = updateOrderStatusDto.status as keyof typeof OrderStatus;
