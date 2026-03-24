@@ -722,20 +722,194 @@ export class CostCalculatorService {
   async calcularCostoCotizacion(
     windows: WindowCostInput[],
   ): Promise<QuotationCostResult> {
+    // 1. Calcular cada ventana individualmente (para devolver por_ventana)
     const resultados = await Promise.all(
       windows.map((w) => this.calcularCostoVentana(w)),
     );
-    const costo_total_proyecto = resultados.reduce(
-      (s, r) => s + r.costo_total,
+
+    // 2. Acumular cortes de TODAS las ventanas por perfil y bin-packear globalmente.
+    //    Esto coincide con la lógica de reports.service.ts (processWindowsToReport)
+    //    y evita sobreestimar barras cuando las sobras de una ventana sirven para otra.
+    const costoGlobalPerfiles = await this.calcularCostoPerfilesGlobal(windows);
+    const costoAccesorios = resultados.reduce(
+      (s, r) => s + r.costo_accesorios,
       0,
     );
+    const costoVidrio = resultados.reduce((s, r) => s + r.costo_vidrio, 0);
+
+    const costo_total_proyecto =
+      costoGlobalPerfiles + costoAccesorios + costoVidrio;
     const margenDecimal = (await this.appSettings.getProfitMargin()) / 100;
     const margenDivisor = Math.max(0.01, Math.min(0.99, 1 - margenDecimal));
+
     return {
       costo_total_proyecto,
       precio_sugerido_minimo: costo_total_proyecto / margenDivisor,
       por_ventana: resultados,
     };
+  }
+
+  // ── Acumula cortes de perfiles de TODAS las ventanas y bin-packea globalmente ──
+  // Igual que processWindowsToReport en reports.service — las sobras de una barra
+  // pueden usarse para otra ventana del mismo perfil, reduciendo el costo real.
+  private async calcularCostoPerfilesGlobal(
+    windows: WindowCostInput[],
+  ): Promise<number> {
+    // materialId → { cuts: number[], precio: number }
+    const perfilMap = new Map<number, { cuts: number[]; precio: number }>();
+
+    for (const win of windows) {
+      const {
+        window_type_id,
+        width_cm,
+        height_cm,
+        color_id,
+        options = {},
+        quantity = 1,
+      } = win;
+
+      const pvcColor = await this.getPvcColor(color_id);
+      const esBlanco = pvcColor
+        ? pvcColor.name.toUpperCase().includes('BLANCO')
+        : false;
+
+      const windowType = await this.getWindowType(window_type_id);
+      if (!windowType) continue;
+
+      const catalogo = await this.getCatalogo(windowType.id);
+      const calcParams = await this.getCalcParams(window_type_id);
+      if (!catalogo) continue;
+
+      const { hojaAncho, hojaAlto, vidrioDescuento } = this.calcularMedidasHoja(
+        width_cm,
+        height_cm,
+        calcParams,
+        options,
+      );
+      const mosquiteroAncho = Number((hojaAncho - vidrioDescuento).toFixed(2));
+      const mosquiteroAlto = Number((hojaAlto - vidrioDescuento).toFixed(2));
+
+      const conMosquitero = this.tieneMosquitero(options, catalogo);
+      const conRefuerzoHojas = this.tieneRefuerzoHojas(options);
+      const conRefuerzoMosquitero = this.tieneRefuerzoMosquitero(options);
+
+      const reglas = this.aplicarRuleOverrides(catalogo, options);
+      const perfilesOverride = await this.resolverPerfilesOverride(
+        reglas,
+        catalogo,
+      );
+
+      const perfiles = [
+        {
+          label: 'MARCO',
+          perfil: perfilesOverride.marco,
+          regla: reglas.regla_marco,
+          ancho: width_cm,
+          alto: height_cm,
+          incluir: true,
+        },
+        {
+          label: 'HOJA',
+          perfil: perfilesOverride.hoja,
+          regla: reglas.regla_hoja,
+          ancho: hojaAncho,
+          alto: hojaAlto,
+          incluir: true,
+        },
+        {
+          label: 'MOSQUITERO',
+          perfil: perfilesOverride.mosquitero,
+          regla: reglas.regla_mosquitero,
+          ancho: mosquiteroAncho,
+          alto: mosquiteroAlto,
+          incluir: conMosquitero,
+        },
+        {
+          label: 'BATIENTE',
+          perfil: perfilesOverride.batiente,
+          regla: reglas.regla_batiente,
+          ancho: hojaAncho,
+          alto: hojaAlto,
+          incluir: true,
+        },
+        {
+          label: 'TAPAJAMBA',
+          perfil: perfilesOverride.tapajamba,
+          regla: reglas.regla_tapajamba,
+          ancho: width_cm,
+          alto: height_cm,
+          incluir: true,
+        },
+      ];
+
+      for (const { label, perfil, regla, ancho, alto, incluir } of perfiles) {
+        if (!incluir || !perfil || !regla) continue;
+
+        const precio = esBlanco
+          ? (perfil.price_white ?? 0)
+          : (perfil.price_color ?? perfil.price_white ?? 0);
+
+        const cortesPorVentana = this.getCutsFromRule(regla, ancho, alto);
+
+        if (!perfilMap.has(perfil.id)) {
+          perfilMap.set(perfil.id, { cuts: [], precio });
+        }
+        const entry = perfilMap.get(perfil.id)!;
+        for (let q = 0; q < quantity; q++) {
+          entry.cuts.push(...cortesPorVentana);
+        }
+
+        // Refuerzo Hojas: mismas cuts que HOJA
+        if (label === 'HOJA' && conRefuerzoHojas && catalogo.refuerzoHoja) {
+          const precioRef = esBlanco
+            ? (catalogo.refuerzoHoja.price_white ?? 0)
+            : (catalogo.refuerzoHoja.price_color ??
+              catalogo.refuerzoHoja.price_white ??
+              0);
+          if (!perfilMap.has(catalogo.refuerzoHoja.id)) {
+            perfilMap.set(catalogo.refuerzoHoja.id, {
+              cuts: [],
+              precio: precioRef,
+            });
+          }
+          const refEntry = perfilMap.get(catalogo.refuerzoHoja.id)!;
+          for (let q = 0; q < quantity; q++) {
+            refEntry.cuts.push(...cortesPorVentana);
+          }
+        }
+
+        // Refuerzo Mosquitero: mismas cuts que MOSQUITERO
+        if (
+          label === 'MOSQUITERO' &&
+          conRefuerzoMosquitero &&
+          catalogo.refuerzoMosquitero
+        ) {
+          const precioRef = esBlanco
+            ? (catalogo.refuerzoMosquitero.price_white ?? 0)
+            : (catalogo.refuerzoMosquitero.price_color ??
+              catalogo.refuerzoMosquitero.price_white ??
+              0);
+          if (!perfilMap.has(catalogo.refuerzoMosquitero.id)) {
+            perfilMap.set(catalogo.refuerzoMosquitero.id, {
+              cuts: [],
+              precio: precioRef,
+            });
+          }
+          const refEntry = perfilMap.get(catalogo.refuerzoMosquitero.id)!;
+          for (let q = 0; q < quantity; q++) {
+            refEntry.cuts.push(...cortesPorVentana);
+          }
+        }
+      }
+    }
+
+    // Bin-packing global por perfil → costo total de perfiles
+    let costoTotal = 0;
+    for (const [, { cuts, precio }] of perfilMap) {
+      const barras = this.ffdBinPack(cuts, LARGO_BARRA_CM);
+      costoTotal += barras * precio;
+    }
+    return costoTotal;
   }
 
   // ── Genera los cortes individuales de una barra según la regla ─────────────
