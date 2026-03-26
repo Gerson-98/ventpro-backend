@@ -1393,133 +1393,106 @@ export class ReportsService {
   }
 }
 
-// ── Algoritmo Guillotine Shelf para optimización 2D de vidrio ────────────────
-// Divide la plancha en "estantes" horizontales. Cada pieza se coloca en el
-// primer estante donde cabe. Si no cabe en ninguno, abre una plancha nueva.
-// Retorna un array de planchas, cada una con las piezas y sus coordenadas (x, y).
+// ── Algoritmo MaxRects-BSSF para optimización 2D de vidrio ───────────────────
+// Mantiene una lista de rectángulos libres por plancha y los divide al colocar
+// cada pieza (guillotina), eligiendo el corte más cuadrado (menos desperdicio).
+// Retorna planchas con piezas y wasteRects (espacios sobrantes sin usar).
 function guillotinePack(
   pieces: { width: number; height: number; label: string }[],
   sheetW: number,
   sheetH: number,
 ): {
-  pieces: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-    label: string;
-  }[];
+  pieces: { x: number; y: number; width: number; height: number; label: string }[];
+  wasteRects: { x: number; y: number; width: number; height: number }[];
 }[] {
-  // Ordenar piezas de mayor a menor altura para mejor aprovechamiento
+  // Ordenar piezas de mayor a menor área
   const sorted = [...pieces].sort(
-    (a, b) => b.height - a.height || b.width - a.width,
+    (a, b) => b.width * b.height - a.width * a.height,
   );
 
-  interface Shelf {
-    y: number; // posición Y del estante
-    height: number; // altura del estante (= altura de la primera pieza colocada)
-    usedX: number; // cuánto ancho se ha usado
-  }
-
+  interface Rect { x: number; y: number; w: number; h: number; }
   interface Sheet {
-    shelves: Shelf[];
-    pieces: {
-      x: number;
-      y: number;
-      width: number;
-      height: number;
-      label: string;
-    }[];
+    pieces: { x: number; y: number; width: number; height: number; label: string }[];
+    freeRects: Rect[];
   }
 
   const sheets: Sheet[] = [];
+  const newSheet = (): Sheet => ({
+    pieces: [],
+    freeRects: [{ x: 0, y: 0, w: sheetW, h: sheetH }],
+  });
 
-  const newSheet = (): Sheet => ({ shelves: [], pieces: [] });
+  // Divide freeRect tras colocar una pieza en (px, py, pw, ph).
+  // Prueba corte horizontal-primero y vertical-primero; elige el que genera
+  // rectángulos más cuadrados (menos desperdicio a futuro).
+  function splitRect(fr: Rect, px: number, py: number, pw: number, ph: number): Rect[] {
+    const rightW = fr.x + fr.w - (px + pw);
+    const bottomH = fr.y + fr.h - (py + ph);
 
-  const tryPlace = (
+    const hFirst: Rect[] = [];
+    if (rightW > 0) hFirst.push({ x: px + pw, y: fr.y, w: rightW, h: ph });
+    if (bottomH > 0) hFirst.push({ x: fr.x, y: py + ph, w: fr.w, h: bottomH });
+
+    const vFirst: Rect[] = [];
+    if (bottomH > 0) vFirst.push({ x: fr.x, y: py + ph, w: pw, h: bottomH });
+    if (rightW > 0) vFirst.push({ x: px + pw, y: fr.y, w: fr.w - pw, h: fr.h });
+
+    const squareness = (rects: Rect[]) =>
+      rects.reduce((s, r) => s + (r.w > 0 && r.h > 0 ? Math.min(r.w, r.h) / Math.max(r.w, r.h) : 0), 0);
+
+    return squareness(hFirst) >= squareness(vFirst) ? hFirst : vFirst;
+  }
+
+  // Intenta colocar una pieza en la plancha usando BSSF (Best Short Side Fit).
+  function tryPlace(
     sheet: Sheet,
     piece: { width: number; height: number; label: string },
-  ): boolean => {
-    // Intentar colocar en estante existente
-    for (const shelf of sheet.shelves) {
-      const remainingX = sheetW - shelf.usedX;
-      // Intentar sin rotar
-      if (piece.width <= remainingX && piece.height <= shelf.height) {
-        sheet.pieces.push({
-          x: shelf.usedX,
-          y: shelf.y,
-          width: piece.width,
-          height: piece.height,
-          label: piece.label,
-        });
-        shelf.usedX += piece.width;
-        return true;
+  ): boolean {
+    let bestScore = Infinity;
+    let bestFr: Rect | null = null;
+    let bestRotated = false;
+
+    for (const fr of sheet.freeRects) {
+      if (piece.width <= fr.w && piece.height <= fr.h) {
+        const score = Math.min(fr.w - piece.width, fr.h - piece.height);
+        if (score < bestScore) { bestScore = score; bestFr = fr; bestRotated = false; }
       }
-      // Intentar rotado (90°)
-      if (piece.height <= remainingX && piece.width <= shelf.height) {
-        sheet.pieces.push({
-          x: shelf.usedX,
-          y: shelf.y,
-          width: piece.height,
-          height: piece.width,
-          label: piece.label,
-        });
-        shelf.usedX += piece.height;
-        return true;
+      if (piece.height <= fr.w && piece.width <= fr.h) {
+        const score = Math.min(fr.w - piece.height, fr.h - piece.width);
+        if (score < bestScore) { bestScore = score; bestFr = fr; bestRotated = true; }
       }
     }
 
-    // Calcular Y disponible para nuevo estante
-    const usedY =
-      sheet.shelves.length > 0
-        ? sheet.shelves[sheet.shelves.length - 1].y +
-          sheet.shelves[sheet.shelves.length - 1].height
-        : 0;
+    if (!bestFr) return false;
 
-    // Intentar abrir nuevo estante sin rotar
-    if (piece.width <= sheetW && usedY + piece.height <= sheetH) {
-      const shelf: Shelf = {
-        y: usedY,
-        height: piece.height,
-        usedX: piece.width,
-      };
-      sheet.shelves.push(shelf);
-      sheet.pieces.push({
-        x: 0,
-        y: usedY,
-        width: piece.width,
-        height: piece.height,
-        label: piece.label,
-      });
-      return true;
+    const pw = bestRotated ? piece.height : piece.width;
+    const ph = bestRotated ? piece.width : piece.height;
+    sheet.pieces.push({ x: bestFr.x, y: bestFr.y, width: pw, height: ph, label: piece.label });
+
+    const newRects = splitRect(bestFr, bestFr.x, bestFr.y, pw, ph);
+    const idx = sheet.freeRects.indexOf(bestFr);
+    sheet.freeRects.splice(idx, 1, ...newRects);
+
+    // Eliminar free rects contenidos dentro de otros
+    for (let i = sheet.freeRects.length - 1; i >= 0; i--) {
+      const a = sheet.freeRects[i];
+      if (a.w <= 0 || a.h <= 0) { sheet.freeRects.splice(i, 1); continue; }
+      for (let j = 0; j < sheet.freeRects.length; j++) {
+        if (i === j) continue;
+        const b = sheet.freeRects[j];
+        if (b.x <= a.x && b.y <= a.y && b.x + b.w >= a.x + a.w && b.y + b.h >= a.y + a.h) {
+          sheet.freeRects.splice(i, 1);
+          break;
+        }
+      }
     }
-    // Intentar rotado en nuevo estante
-    if (piece.height <= sheetW && usedY + piece.width <= sheetH) {
-      const shelf: Shelf = {
-        y: usedY,
-        height: piece.width,
-        usedX: piece.height,
-      };
-      sheet.shelves.push(shelf);
-      sheet.pieces.push({
-        x: 0,
-        y: usedY,
-        width: piece.height,
-        height: piece.width,
-        label: piece.label,
-      });
-      return true;
-    }
-    return false;
-  };
+    return true;
+  }
 
   for (const piece of sorted) {
     let placed = false;
     for (const sheet of sheets) {
-      if (tryPlace(sheet, piece)) {
-        placed = true;
-        break;
-      }
+      if (tryPlace(sheet, piece)) { placed = true; break; }
     }
     if (!placed) {
       const sheet = newSheet();
@@ -1528,5 +1501,11 @@ function guillotinePack(
     }
   }
 
-  return sheets.map((s) => ({ pieces: s.pieces }));
+  // BUG 1+3: filtrar planchas vacías (pieza más grande que la plancha)
+  return sheets
+    .filter((s) => s.pieces.length > 0)
+    .map((s) => ({
+      pieces: s.pieces,
+      wasteRects: s.freeRects.map((r) => ({ x: r.x, y: r.y, width: r.w, height: r.h })),
+    }));
 }
