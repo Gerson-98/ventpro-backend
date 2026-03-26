@@ -1394,118 +1394,117 @@ export class ReportsService {
 }
 
 // ── Algoritmo MaxRects-BSSF para optimización 2D de vidrio ───────────────────
-// Mantiene una lista de rectángulos libres por plancha y los divide al colocar
-// cada pieza (guillotina), eligiendo el corte más cuadrado (menos desperdicio).
-// Retorna planchas con piezas y wasteRects (espacios sobrantes sin usar).
+// Guillotina con Best Short Side Fit. Retorna planchas con piezas y wasteRects.
 function guillotinePack(
   pieces: { width: number; height: number; label: string }[],
   sheetW: number,
   sheetH: number,
-): {
-  pieces: { x: number; y: number; width: number; height: number; label: string }[];
-  wasteRects: { x: number; y: number; width: number; height: number }[];
-}[] {
-  // Ordenar piezas de mayor a menor área
-  const sorted = [...pieces].sort(
-    (a, b) => b.width * b.height - a.width * a.height,
-  );
+): { pieces: { x: number; y: number; width: number; height: number; label: string }[]; wasteRects: { x: number; y: number; width: number; height: number }[] }[] {
 
-  interface Rect { x: number; y: number; w: number; h: number; }
+  const round1 = (n: number) => Math.round(n * 10) / 10;
+
+  const sorted = [...pieces].sort((a, b) => (b.width * b.height) - (a.width * a.height));
+
+  interface FreeRect { x: number; y: number; w: number; h: number; }
   interface Sheet {
-    pieces: { x: number; y: number; width: number; height: number; label: string }[];
-    freeRects: Rect[];
+    placed: { x: number; y: number; width: number; height: number; label: string }[];
+    freeRects: FreeRect[];
   }
 
   const sheets: Sheet[] = [];
-  const newSheet = (): Sheet => ({
-    pieces: [],
-    freeRects: [{ x: 0, y: 0, w: sheetW, h: sheetH }],
-  });
 
-  // Divide freeRect tras colocar una pieza en (px, py, pw, ph).
-  // Prueba corte horizontal-primero y vertical-primero; elige el que genera
-  // rectángulos más cuadrados (menos desperdicio a futuro).
-  function splitRect(fr: Rect, px: number, py: number, pw: number, ph: number): Rect[] {
-    const rightW = fr.x + fr.w - (px + pw);
-    const bottomH = fr.y + fr.h - (py + ph);
-
-    const hFirst: Rect[] = [];
-    if (rightW > 0) hFirst.push({ x: px + pw, y: fr.y, w: rightW, h: ph });
-    if (bottomH > 0) hFirst.push({ x: fr.x, y: py + ph, w: fr.w, h: bottomH });
-
-    const vFirst: Rect[] = [];
-    if (bottomH > 0) vFirst.push({ x: fr.x, y: py + ph, w: pw, h: bottomH });
-    if (rightW > 0) vFirst.push({ x: px + pw, y: fr.y, w: fr.w - pw, h: fr.h });
-
-    const squareness = (rects: Rect[]) =>
-      rects.reduce((s, r) => s + (r.w > 0 && r.h > 0 ? Math.min(r.w, r.h) / Math.max(r.w, r.h) : 0), 0);
-
-    return squareness(hFirst) >= squareness(vFirst) ? hFirst : vFirst;
+  function newSheet(): Sheet {
+    return {
+      placed: [],
+      freeRects: [{ x: 0, y: 0, w: sheetW, h: sheetH }],
+    };
   }
 
-  // Intenta colocar una pieza en la plancha usando BSSF (Best Short Side Fit).
-  function tryPlace(
-    sheet: Sheet,
-    piece: { width: number; height: number; label: string },
-  ): boolean {
+  // Short Side Fit score: menor es mejor
+  function bssfScore(fr: FreeRect, pw: number, ph: number): number {
+    const leftoverH = Math.abs(fr.w - pw);
+    const leftoverV = Math.abs(fr.h - ph);
+    return Math.min(leftoverH, leftoverV);
+  }
+
+  function tryPlace(sheet: Sheet, pw: number, ph: number, label: string): boolean {
     let bestScore = Infinity;
-    let bestFr: Rect | null = null;
+    let bestFr: FreeRect | null = null;
     let bestRotated = false;
 
     for (const fr of sheet.freeRects) {
-      if (piece.width <= fr.w && piece.height <= fr.h) {
-        const score = Math.min(fr.w - piece.width, fr.h - piece.height);
+      if (pw <= fr.w && ph <= fr.h) {
+        const score = bssfScore(fr, pw, ph);
         if (score < bestScore) { bestScore = score; bestFr = fr; bestRotated = false; }
       }
-      if (piece.height <= fr.w && piece.width <= fr.h) {
-        const score = Math.min(fr.w - piece.height, fr.h - piece.width);
+      if (ph <= fr.w && pw <= fr.h) {
+        const score = bssfScore(fr, ph, pw);
         if (score < bestScore) { bestScore = score; bestFr = fr; bestRotated = true; }
       }
     }
 
     if (!bestFr) return false;
 
-    const pw = bestRotated ? piece.height : piece.width;
-    const ph = bestRotated ? piece.width : piece.height;
-    sheet.pieces.push({ x: bestFr.x, y: bestFr.y, width: pw, height: ph, label: piece.label });
+    const fw = bestRotated ? ph : pw;
+    const fh = bestRotated ? pw : ph;
+    const px = round1(bestFr.x);
+    const py = round1(bestFr.y);
 
-    const newRects = splitRect(bestFr, bestFr.x, bestFr.y, pw, ph);
-    const idx = sheet.freeRects.indexOf(bestFr);
-    sheet.freeRects.splice(idx, 1, ...newRects);
+    sheet.placed.push({ x: px, y: py, width: round1(fw), height: round1(fh), label });
 
-    // Eliminar free rects contenidos dentro de otros
-    for (let i = sheet.freeRects.length - 1; i >= 0; i--) {
-      const a = sheet.freeRects[i];
-      if (a.w <= 0 || a.h <= 0) { sheet.freeRects.splice(i, 1); continue; }
-      for (let j = 0; j < sheet.freeRects.length; j++) {
-        if (i === j) continue;
-        const b = sheet.freeRects[j];
-        if (b.x <= a.x && b.y <= a.y && b.x + b.w >= a.x + a.w && b.y + b.h >= a.y + a.h) {
-          sheet.freeRects.splice(i, 1);
-          break;
-        }
-      }
+    const fr = bestFr;
+    const newFrees: FreeRect[] = [];
+
+    // Derecha de la pieza
+    if (fr.w - fw > 0.5) {
+      newFrees.push({
+        x: round1(fr.x + fw), y: round1(fr.y),
+        w: round1(fr.w - fw), h: round1(fr.h),
+      });
     }
+    // Abajo de la pieza
+    if (fr.h - fh > 0.5) {
+      newFrees.push({
+        x: round1(fr.x), y: round1(fr.y + fh),
+        w: round1(fw), h: round1(fr.h - fh),
+      });
+    }
+
+    sheet.freeRects = sheet.freeRects.filter(f => f !== fr);
+    sheet.freeRects.push(...newFrees);
+
+    // Eliminar free rects que se solapan con la pieza recién colocada
+    sheet.freeRects = sheet.freeRects.filter(f => {
+      const noOverlap =
+        f.x >= px + fw || f.x + f.w <= px ||
+        f.y >= py + fh || f.y + f.h <= py;
+      return noOverlap && f.w > 0.5 && f.h > 0.5;
+    });
+
     return true;
   }
 
   for (const piece of sorted) {
     let placed = false;
     for (const sheet of sheets) {
-      if (tryPlace(sheet, piece)) { placed = true; break; }
+      if (tryPlace(sheet, piece.width, piece.height, piece.label)) { placed = true; break; }
     }
     if (!placed) {
       const sheet = newSheet();
       sheets.push(sheet);
-      tryPlace(sheet, piece);
+      tryPlace(sheet, piece.width, piece.height, piece.label);
     }
   }
 
-  // BUG 1+3: filtrar planchas vacías (pieza más grande que la plancha)
   return sheets
-    .filter((s) => s.pieces.length > 0)
-    .map((s) => ({
-      pieces: s.pieces,
-      wasteRects: s.freeRects.map((r) => ({ x: r.x, y: r.y, width: r.w, height: r.h })),
+    .filter(s => s.placed.length > 0)
+    .map(s => ({
+      pieces: s.placed,
+      wasteRects: s.freeRects
+        .filter(f => f.w > 1 && f.h > 1)
+        .map(f => ({
+          x: round1(f.x), y: round1(f.y),
+          width: round1(f.w), height: round1(f.h),
+        })),
     }));
 }
