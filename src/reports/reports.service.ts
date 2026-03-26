@@ -1455,18 +1455,22 @@ function guillotinePack(
     const fr = bestFr;
     const newFrees: FreeRect[] = [];
 
-    // Derecha de la pieza
+    // Corte HORIZONTAL PRIMERO: rect derecho hereda altura de la pieza,
+    // rect inferior hereda el ancho COMPLETO del free rect original.
+    // Esto mantiene franjas inferiores amplias y contiguas → mejor empaquetado.
+
+    // Derecha de la pieza (alto = alto de la pieza, no del free rect)
     if (fr.w - fw > 0.5) {
       newFrees.push({
         x: round1(fr.x + fw), y: round1(fr.y),
-        w: round1(fr.w - fw), h: round1(fr.h),
+        w: round1(fr.w - fw), h: round1(fh),
       });
     }
-    // Abajo de la pieza
+    // Abajo de la pieza (ancho COMPLETO del free rect original)
     if (fr.h - fh > 0.5) {
       newFrees.push({
         x: round1(fr.x), y: round1(fr.y + fh),
-        w: round1(fw), h: round1(fr.h - fh),
+        w: round1(fr.w), h: round1(fr.h - fh),
       });
     }
 
