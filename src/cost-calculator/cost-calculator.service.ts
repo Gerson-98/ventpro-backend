@@ -3,6 +3,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AppSettingsService } from '../app-settings/app-settings.service';
+import { guillotinePackCount } from '../common/guillotine-pack';
 
 interface WindowCostInput {
   window_type_id: number;
@@ -962,92 +963,10 @@ export class CostCalculatorService {
     return bins.length || 1;
   }
 
-  // ── Guillotine Shelf 2D — misma lógica que guillotinePack en reports.service.
-  //    Solo devuelve el número de planchas (sin coordenadas visuales).
-  private guillotinePackCount(
-    pieces: { width: number; height: number }[],
-    sheetW: number,
-    sheetH: number,
-  ): number {
-    const sorted = [...pieces].sort(
-      (a, b) => b.height - a.height || b.width - a.width,
-    );
-
-    interface Shelf {
-      y: number;
-      height: number;
-      usedX: number;
-    }
-    interface Sheet {
-      shelves: Shelf[];
-    }
-
-    const sheets: Sheet[] = [];
-    const newSheet = (): Sheet => ({ shelves: [] });
-
-    const tryPlace = (
-      sheet: Sheet,
-      piece: { width: number; height: number },
-    ): boolean => {
-      for (const shelf of sheet.shelves) {
-        const remainingX = sheetW - shelf.usedX;
-        // Sin rotar
-        if (piece.width <= remainingX && piece.height <= shelf.height) {
-          shelf.usedX += piece.width;
-          return true;
-        }
-        // Rotado 90°
-        if (piece.height <= remainingX && piece.width <= shelf.height) {
-          shelf.usedX += piece.height;
-          return true;
-        }
-      }
-      const usedY =
-        sheet.shelves.length > 0
-          ? sheet.shelves[sheet.shelves.length - 1].y +
-            sheet.shelves[sheet.shelves.length - 1].height
-          : 0;
-      // Nuevo estante sin rotar
-      if (piece.width <= sheetW && usedY + piece.height <= sheetH) {
-        sheet.shelves.push({
-          y: usedY,
-          height: piece.height,
-          usedX: piece.width,
-        });
-        return true;
-      }
-      // Nuevo estante rotado
-      if (piece.height <= sheetW && usedY + piece.width <= sheetH) {
-        sheet.shelves.push({
-          y: usedY,
-          height: piece.width,
-          usedX: piece.height,
-        });
-        return true;
-      }
-      return false;
-    };
-
-    for (const piece of sorted) {
-      let placed = false;
-      for (const sheet of sheets) {
-        if (tryPlace(sheet, piece)) {
-          placed = true;
-          break;
-        }
-      }
-      if (!placed) {
-        const sheet = newSheet();
-        sheets.push(sheet);
-        tryPlace(sheet, piece);
-      }
-    }
-    return sheets.length || 0;
-  }
 
   // ── Acumula piezas de vidrio de TODAS las ventanas y calcula planchas con
-  //    guillotinePackCount — igual que processWindowsToReport en reports.service.
-  //    Garantiza que el costo de vidrio del modal coincida con el ProfilesReport.
+  //    guillotinePackCount (MaxRects-BSSF) — misma lógica que processWindowsToReport
+  //    en reports.service. DUELA se calcula como barras lineales, no como planchas 2D.
   private async calcularCostoVidrioGlobal(
     windows: WindowCostInput[],
   ): Promise<number> {
@@ -1061,6 +980,11 @@ export class CostCalculatorService {
         pieces: { width: number; height: number }[];
       }
     >();
+
+    // DUELA: se calcula como barras lineales (igual que processWindowsToReport)
+    let duelaTotalLength = 0;
+    let duelaPrecio = 0;
+    let duelaInitialized = false;
 
     for (const win of windows) {
       const {
@@ -1091,10 +1015,44 @@ export class CostCalculatorService {
         options,
       );
 
-      const mosquiteroAncho = Number((hojaAncho - vidrioDescuento).toFixed(2));
-      const mosquiteroAlto = Number((hojaAlto - vidrioDescuento).toFixed(2));
+      const vidrioAncho = Number((hojaAncho - vidrioDescuento).toFixed(2));
+      const vidrioAlto = Number((hojaAlto - vidrioDescuento).toFixed(2));
 
-      if (mosquiteroAncho <= 0 || mosquiteroAlto <= 0) continue;
+      if (vidrioAncho <= 0 || vidrioAlto <= 0) continue;
+
+      // Obtener el glassColor para verificar si es DUELA
+      const glassColor = await this.prisma.glassColor.findUnique({
+        where: { id: glass_color_id },
+        include: { material: true },
+      });
+      if (!glassColor?.material) continue;
+
+      const glassNameUpper = glassColor.name.toUpperCase();
+
+      // ── DUELA: calcular como barras lineales (no como planchas 2D) ──
+      if (glassNameUpper.includes('DUELA') && glassNameUpper !== 'VIDRIO Y DUELA') {
+        if (!duelaInitialized) {
+          const duelaMaterial = await this.prisma.material.findFirst({
+            where: { name: 'DUELA' },
+          });
+          if (duelaMaterial) {
+            duelaPrecio = esBlanco
+              ? (duelaMaterial.price_white ?? duelaMaterial.price_color ?? 0)
+              : (duelaMaterial.price_color ?? duelaMaterial.price_white ?? 0);
+            duelaInitialized = true;
+          }
+        }
+        const reglas = this.aplicarRuleOverrides(catalogo, options);
+        const cantVidrios = reglas.cant_vidrios ?? catalogo.cant_vidrios ?? 1;
+        for (let q = 0; q < cantVidrios * quantity; q++) {
+          const stripsNeeded = Math.ceil(vidrioAlto / 15);
+          duelaTotalLength += stripsNeeded * vidrioAncho;
+        }
+        continue;
+      }
+
+      // ── VIDRIO Y DUELA: se omite igual que en processWindowsToReport ──
+      if (glassNameUpper === 'VIDRIO Y DUELA') continue;
 
       const reglas = this.aplicarRuleOverrides(catalogo, options);
       const cantVidrios = reglas.cant_vidrios ?? catalogo.cant_vidrios;
@@ -1102,12 +1060,6 @@ export class CostCalculatorService {
 
       // Inicializar entrada del mapa la primera vez que aparece este glassColor
       if (!glassMap.has(glass_color_id)) {
-        const glassColor = await this.prisma.glassColor.findUnique({
-          where: { id: glass_color_id },
-          include: { material: true },
-        });
-        if (!glassColor?.material) continue;
-
         const precio = esBlanco
           ? (glassColor.material.price_white ??
             glassColor.material.price_color ??
@@ -1128,22 +1080,27 @@ export class CostCalculatorService {
       // Una pieza por cada vidrio × cantidad de ventanas (igual que el reporte)
       for (let q = 0; q < cantVidrios * quantity; q++) {
         entry.pieces.push({
-          width: Number(mosquiteroAncho.toFixed(1)),
-          height: Number(mosquiteroAlto.toFixed(1)),
+          width: Number(vidrioAncho.toFixed(1)),
+          height: Number(vidrioAlto.toFixed(1)),
         });
       }
     }
 
     let costoTotal = 0;
+
+    // Vidrio: guillotine MaxRects-BSSF (mismo algoritmo que processWindowsToReport)
     for (const [, { precio, sheetWidth, sheetHeight, pieces }] of glassMap) {
       if (pieces.length === 0) continue;
-      const planchas = this.guillotinePackCount(
-        pieces,
-        sheetWidth,
-        sheetHeight,
-      );
+      const planchas = guillotinePackCount(pieces, sheetWidth, sheetHeight);
       costoTotal += planchas * precio;
     }
+
+    // DUELA: barras lineales
+    if (duelaTotalLength > 0 && duelaPrecio > 0) {
+      const barras = Math.ceil(duelaTotalLength / LARGO_BARRA_CM);
+      costoTotal += barras * duelaPrecio;
+    }
+
     return costoTotal;
   }
 }
