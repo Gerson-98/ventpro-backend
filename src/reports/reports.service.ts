@@ -909,6 +909,12 @@ export class ReportsService {
         options,
         catalogEntry,
       );
+      // Para el plan de corte, requerir 'con_mosquitero' explícito.
+      // tieneMosquitero() retorna true cuando la key está ausente (ventanas sin
+      // la opción guardada), lo que produciría duplicación de piezas de HOJA.
+      const conMosquiteroCut =
+        catalogEntry.perfilMosquitero != null &&
+        options['mosquitero'] === 'con_mosquitero';
       const conRefuerzoHojas = this.costCalculator.tieneRefuerzoHojas(options);
       const conRefuerzoMosquitero =
         this.costCalculator.tieneRefuerzoMosquitero(options);
@@ -1032,7 +1038,7 @@ export class ReportsService {
         if (
           isSliding &&
           (profile.type === 'HOJA' || profile.type === 'MOSQUITERO') &&
-          conMosquitero &&
+          conMosquiteroCut &&
           catalogEntry.perfilHoja &&
           catalogEntry.perfilMosquitero
         ) {
