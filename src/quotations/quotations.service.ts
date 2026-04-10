@@ -561,13 +561,14 @@ export class QuotationsService {
           })),
         });
 
-        // 3. Actualizar campos del pedido (total, fechas, include_iva)
+        // 3. Actualizar campos del pedido (total, fechas, include_iva, notes)
         resultOrder = await prisma.order.update({
           where: { id: existingOrderId },
           data: {
             project: quotation.project,
             total: quotation.total_price,
             include_iva: quotation.include_iva ?? false,
+            notes: quotation.notes ?? null,
             clientId: quotation.clientId,
             installationStartDate: startDate,
             installationEndDate: endDate,
@@ -582,6 +583,7 @@ export class QuotationsService {
             status: OrderStatus.en_proceso,
             clientId: quotation.clientId,
             include_iva: quotation.include_iva ?? false,
+            notes: quotation.notes ?? null,
             generatedFromQuotationId: id,
             installationStartDate: startDate,
             installationEndDate: endDate,

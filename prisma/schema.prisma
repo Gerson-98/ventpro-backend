@@ -344,6 +344,7 @@ model Order {
   total                    Float?
   clientId                 Int?
   include_iva              Boolean      @default(false)
+  notes                    String?
   installationStartDate    DateTime?
   installationEndDate      DateTime?
   createdAt                DateTime     @default(now())
