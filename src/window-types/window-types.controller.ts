@@ -6,6 +6,7 @@ import {
   Param,
   Delete,
   Put,
+  Patch,
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -21,6 +22,7 @@ export class WindowTypesController {
     @Body()
     data: {
       name: string;
+      displayName?: string;
       description?: string;
       pvcColorIds?: number[];
     },
@@ -46,7 +48,16 @@ export class WindowTypesController {
   @Put(':id')
   update(
     @Param('id') id: string,
-    @Body() data: { name?: string; description?: string },
+    @Body() data: { name?: string; displayName?: string | null; description?: string },
+  ) {
+    return this.windowTypesService.update(+id, data);
+  }
+
+  // El frontend envía PATCH — este alias apunta al mismo handler
+  @Patch(':id')
+  patch(
+    @Param('id') id: string,
+    @Body() data: { name?: string; displayName?: string | null; description?: string },
   ) {
     return this.windowTypesService.update(+id, data);
   }

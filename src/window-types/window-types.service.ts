@@ -7,15 +7,15 @@ export class WindowTypesService {
 
   async create(data: {
     name: string;
+    displayName?: string;
     description?: string;
     pvcColorIds?: number[];
   }) {
-    const { name, description, pvcColorIds = [] } = data;
+    const { name, displayName, description, pvcColorIds = [] } = data;
 
     return this.prisma.$transaction(async (tx) => {
-      // CAMBIO: window_types -> windowType
       const newWindowType = await tx.windowType.create({
-        data: { name, description },
+        data: { name, displayName: displayName || null, description },
       });
 
       if (pvcColorIds.length > 0) {
@@ -31,15 +31,18 @@ export class WindowTypesService {
     });
   }
 
-  findAll() {
-    return this.prisma.windowType.findMany({
+  async findAll() {
+    const types = await this.prisma.windowType.findMany({
       orderBy: { id: 'asc' },
       include: {
-        pvcLinks: {
-          include: { pvcColor: true },
-        },
+        pvcLinks: { include: { pvcColor: true } },
       },
     });
+    // Aplana pvcLinks[].pvcColor → pvcColors[] para que el frontend no tenga que conocer la tabla join
+    return types.map(({ pvcLinks, ...t }) => ({
+      ...t,
+      pvcColors: pvcLinks.map((l) => l.pvcColor),
+    }));
   }
 
   findOne(id: number) {
@@ -47,8 +50,7 @@ export class WindowTypesService {
     return this.prisma.windowType.findUnique({ where: { id } });
   }
 
-  update(id: number, data: { name?: string; description?: string }) {
-    // CAMBIO: window_types -> windowType
+  update(id: number, data: { name?: string; displayName?: string | null; description?: string }) {
     return this.prisma.windowType.update({ where: { id }, data });
   }
 
