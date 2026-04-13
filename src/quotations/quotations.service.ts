@@ -103,72 +103,71 @@ export class QuotationsService {
 
     if (include_iva) totalQuotationPrice = totalQuotationPrice * 1.12;
 
-    // ── Generar quotationNumber atómico dentro de transaction ─────────────────
-    // Garantiza que dos vendedores simultáneos nunca obtengan el mismo número.
-    try {
-      const result = await this.prisma.$transaction(async (tx) => {
-        const startOfDay = new Date(today);
-        startOfDay.setHours(0, 0, 0, 0);
-        const endOfDay = new Date(today);
-        endOfDay.setHours(23, 59, 59, 999);
+    // ── Generar quotationNumber sin colisiones bajo alta concurrencia ──────────
+    // Patrón: pg_advisory_xact_lock() — lock exclusivo a nivel de transacción.
+    //
+    // Por qué NO usar Serializable + retry:
+    //   COUNT(*) + INSERT bajo Serializable genera "phantom reads". PostgreSQL
+    //   aborta una de las transacciones concurrentes (error 40001). Incluso con
+    //   retry, el sistema puede fallar bajo carga alta y la UX se degrada.
+    //
+    // Por qué SÍ usar advisory lock:
+    //   pg_advisory_xact_lock() serializa el acceso a esta sección crítica.
+    //   Las transacciones concurrentes ESPERAN en cola — no fallan.
+    //   El lock se libera automáticamente al terminar la transacción.
+    //   No requiere cambios de schema ni lógica de retry.
+    //
+    // hashtext('quotation_number_gen') produce una clave bigint estable y única
+    // para esta operación específica, sin riesgo de colisionar con otros locks.
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext('quotation_number_gen')::bigint)`;
 
-        const todayCount = await tx.quotation.count({
-          where: {
-            createdAt: {
-              gte: startOfDay,
-              lt: endOfDay,
-            },
-          },
-        });
+      const startOfDay = new Date(today);
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(today);
+      endOfDay.setHours(23, 59, 59, 999);
 
-        const newQuotationNumber = `${datePrefix}${(todayCount + 1).toString().padStart(2, '0')}`;
-
-        // Crear la cotización SIN ventanas primero
-        const quotation = await tx.quotation.create({
-          data: {
-            quotationNumber: newQuotationNumber,
-            project,
-            price_per_m2,
-            clientId,
-            include_iva: !!include_iva,
-            total_price: totalQuotationPrice,
-            userId: user.id,
-            notes: notes || null,
-            reference_image_url: reference_image_url || null,
-          },
-        });
-
-        // Crear ventanas una por una secuencialmente para garantizar
-        // que los IDs auto-increment sigan el orden del array.
-        // createMany / nested create NO garantizan esto en PostgreSQL.
-        for (const win of windowsData) {
-          await tx.quotationWindow.create({
-            data: {
-              ...win,
-              quotation_id: quotation.id,
-            },
-          });
-        }
-
-        // Recargar con includes y orderBy
-        return tx.quotation.findUnique({
-          where: { id: quotation.id },
-          include: {
-            quotation_windows: { orderBy: { id: 'asc' } },
-          },
-        });
-      }, {
-        isolationLevel: 'Serializable',
+      const todayCount = await tx.quotation.count({
+        where: {
+          createdAt: { gte: startOfDay, lt: endOfDay },
+        },
       });
-      return result;
-    } catch (err) {
-      if (err.code === 'P2002') {
-        throw new ConflictException(
-          'Otro vendedor creó una cotización al mismo tiempo. Por favor intenta de nuevo.'
-        );
+
+      const newQuotationNumber = `${datePrefix}${(todayCount + 1).toString().padStart(2, '0')}`;
+
+      // Crear la cotización SIN ventanas primero
+      const quotation = await tx.quotation.create({
+        data: {
+          quotationNumber: newQuotationNumber,
+          project,
+          price_per_m2,
+          clientId,
+          include_iva: !!include_iva,
+          total_price: totalQuotationPrice,
+          userId: user.id,
+          notes: notes || null,
+          reference_image_url: reference_image_url || null,
+        },
+      });
+
+      // Crear ventanas una por una secuencialmente para garantizar
+      // que los IDs auto-increment sigan el orden del array.
+      // createMany / nested create NO garantizan esto en PostgreSQL.
+      for (const win of windowsData) {
+        await tx.quotationWindow.create({
+          data: { ...win, quotation_id: quotation.id },
+        });
       }
-      throw err;
-    }
+
+      // Recargar con includes y orderBy
+      return tx.quotation.findUnique({
+        where: { id: quotation.id },
+        include: {
+          quotation_windows: { orderBy: { id: 'asc' } },
+        },
+      });
+    });
+    return result;
   }
 
   // ─── findAll ─────────────────────────────────────────────────────────────────
