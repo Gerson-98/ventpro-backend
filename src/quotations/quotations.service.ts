@@ -228,6 +228,7 @@ export class QuotationsService {
         user: { select: { id: true, name: true } },
         quotation_windows: {
           include: { windowType: true, pvcColor: true, glassColor: true },
+          orderBy: { id: 'asc' },
         },
         generatedOrder: true,
       },
