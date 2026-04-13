@@ -270,15 +270,27 @@ export class OrdersService {
       );
     }
 
-    const order = await this.prisma.order.findUnique({
-      where: { id },
-      select: { id: true },
-    });
-    if (!order) {
-      throw new NotFoundException(`Pedido #${id} no encontrado`);
-    }
+    return this.prisma.$transaction(async (tx) => {
+      const order = await tx.order.findUnique({
+        where: { id },
+        select: { id: true, generatedFromQuotationId: true },
+      });
+      if (!order) throw new NotFoundException(`Pedido #${id} no encontrado`);
 
-    return this.prisma.order.delete({ where: { id } });
+      // Si viene de una cotización, revertirla a en_proceso para que sea editable
+      if (order.generatedFromQuotationId) {
+        await tx.quotation.update({
+          where: { id: order.generatedFromQuotationId },
+          data: { status: QuotationStatus.en_proceso },
+        });
+      }
+
+      // Windows no tienen onDelete:Cascade → eliminar explícitamente
+      await tx.window.deleteMany({ where: { order_id: id } });
+
+      // Checklists tienen onDelete:Cascade → se eliminan automáticamente
+      return tx.order.delete({ where: { id } });
+    });
   }
 
   // ─── findScheduled ────────────────────────────────────────────────────────

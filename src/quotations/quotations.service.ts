@@ -201,6 +201,7 @@ export class QuotationsService {
         include: {
           client: true,
           user: { select: { id: true, name: true } },
+          generatedOrder: { select: { id: true } },
         },
         orderBy: { createdAt: 'desc' },
         take: safeLimit,
@@ -369,6 +370,7 @@ export class QuotationsService {
           client: true,
           quotation_windows: {
             include: { windowType: true, pvcColor: true, glassColor: true },
+            orderBy: { id: 'asc' },
           },
         },
       });
@@ -410,6 +412,7 @@ export class QuotationsService {
         client: true,
         quotation_windows: {
           include: { windowType: true, pvcColor: true, glassColor: true },
+          orderBy: { id: 'asc' },
         },
         generatedOrder: true,
       },
@@ -613,15 +616,28 @@ export class QuotationsService {
 
     const quotation = await this.prisma.quotation.findUnique({
       where: { id },
-      include: { generatedOrder: true },
+      include: { generatedOrder: { select: { id: true } } },
     });
     if (!quotation)
       throw new NotFoundException(`Cotización con ID #${id} no encontrada.`);
-    if (quotation.generatedOrder) {
-      throw new BadRequestException(
-        `No se puede eliminar. Esta cotización ya está confirmada y amarrada al Pedido #${quotation.generatedOrder.id}.`,
+
+    // Vendedores no pueden eliminar cotizaciones con pedido asociado
+    if (quotation.generatedOrder && !this.isAdmin(user)) {
+      throw new ForbiddenException(
+        'No puedes eliminar una cotización con pedido asociado. Contacta al administrador.',
       );
     }
-    return this.prisma.quotation.delete({ where: { id } });
+
+    return this.prisma.$transaction(async (tx) => {
+      if (quotation.generatedOrder) {
+        const orderId = quotation.generatedOrder.id;
+        // Windows no tienen onDelete:Cascade → eliminar explícitamente
+        await tx.window.deleteMany({ where: { order_id: orderId } });
+        // Checklists sí tienen cascade, se eliminan automáticamente con el pedido
+        await tx.order.delete({ where: { id: orderId } });
+      }
+      // QuotationWindows tienen onDelete:Cascade → se eliminan automáticamente
+      return tx.quotation.delete({ where: { id } });
+    });
   }
 }
