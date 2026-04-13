@@ -441,7 +441,7 @@ export class QuotationsService {
     const quotation = await this.prisma.quotation.findUnique({
       where: { id },
       include: {
-        quotation_windows: true,
+        quotation_windows: { orderBy: { id: 'asc' } },
         generatedOrder: { select: { id: true } },
       },
     });

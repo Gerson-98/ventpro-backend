@@ -188,6 +188,7 @@ export class OrdersService {
             pvcColor: true,
             glassColor: true,
           },
+          orderBy: { id: 'asc' },
         },
       },
     });
