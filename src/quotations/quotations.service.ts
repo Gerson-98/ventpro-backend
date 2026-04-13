@@ -104,70 +104,83 @@ export class QuotationsService {
     if (include_iva) totalQuotationPrice = totalQuotationPrice * 1.12;
 
     // ── Generar quotationNumber sin colisiones bajo alta concurrencia ──────────
-    // Patrón: pg_advisory_xact_lock() — lock exclusivo a nivel de transacción.
+    // Patrón: COUNT + INSERT con unique constraint en quotationNumber + retry.
     //
-    // Por qué NO usar Serializable + retry:
-    //   COUNT(*) + INSERT bajo Serializable genera "phantom reads". PostgreSQL
-    //   aborta una de las transacciones concurrentes (error 40001). Incluso con
-    //   retry, el sistema puede fallar bajo carga alta y la UX se degrada.
+    // Por qué NO usamos pg_advisory_xact_lock():
+    //   Neon usa pgBouncer (connection pooling). Las advisory locks dentro de
+    //   transacciones interactivas de Prisma pueden producir timeouts o errores
+    //   de conexión en entornos serverless — exactamente el 500 que se observa.
     //
-    // Por qué SÍ usar advisory lock:
-    //   pg_advisory_xact_lock() serializa el acceso a esta sección crítica.
-    //   Las transacciones concurrentes ESPERAN en cola — no fallan.
-    //   El lock se libera automáticamente al terminar la transacción.
-    //   No requiere cambios de schema ni lógica de retry.
-    //
-    // hashtext('quotation_number_gen') produce una clave bigint estable y única
-    // para esta operación específica, sin riesgo de colisionar con otros locks.
-    const result = await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext('quotation_number_gen')::bigint)`;
+    // Por qué SÍ funciona este patrón:
+    //   Si dos requests simultáneos generan el mismo quotationNumber, la unique
+    //   constraint (campo quotationNumber en schema) rechaza el segundo con P2002.
+    //   El catch atrapa P2002, reintenta y el COUNT ahora devuelve N+1 (el primero
+    //   ya confirmó), por lo que el reintento obtiene un número distinto.
+    //   En la práctica con carga normal (< 10 req/s) el primer intento siempre
+    //   funciona. Solo bajo ráfagas extremas ocurre 1 reintento.
+    const MAX_RETRIES = 5;
 
-      const startOfDay = new Date(today);
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date(today);
-      endOfDay.setHours(23, 59, 59, 999);
+    const startOfDay = new Date(today);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(today);
+    endOfDay.setHours(23, 59, 59, 999);
 
-      const todayCount = await tx.quotation.count({
-        where: {
-          createdAt: { gte: startOfDay, lt: endOfDay },
-        },
-      });
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        const result = await this.prisma.$transaction(async (tx) => {
+          const todayCount = await tx.quotation.count({
+            where: { createdAt: { gte: startOfDay, lt: endOfDay } },
+          });
 
-      const newQuotationNumber = `${datePrefix}${(todayCount + 1).toString().padStart(2, '0')}`;
+          const newQuotationNumber = `${datePrefix}${(todayCount + 1).toString().padStart(2, '0')}`;
 
-      // Crear la cotización SIN ventanas primero
-      const quotation = await tx.quotation.create({
-        data: {
-          quotationNumber: newQuotationNumber,
-          project,
-          price_per_m2,
-          clientId,
-          include_iva: !!include_iva,
-          total_price: totalQuotationPrice,
-          userId: user.id,
-          notes: notes || null,
-          reference_image_url: reference_image_url || null,
-        },
-      });
+          // Crear la cotización SIN ventanas primero
+          const quotation = await tx.quotation.create({
+            data: {
+              quotationNumber: newQuotationNumber,
+              project,
+              price_per_m2,
+              clientId,
+              include_iva: !!include_iva,
+              total_price: totalQuotationPrice,
+              userId: user.id,
+              notes: notes || null,
+              reference_image_url: reference_image_url || null,
+            },
+          });
 
-      // Crear ventanas una por una secuencialmente para garantizar
-      // que los IDs auto-increment sigan el orden del array.
-      // createMany / nested create NO garantizan esto en PostgreSQL.
-      for (const win of windowsData) {
-        await tx.quotationWindow.create({
-          data: { ...win, quotation_id: quotation.id },
+          // Crear ventanas una por una secuencialmente para garantizar
+          // que los IDs auto-increment sigan el orden del array.
+          // createMany / nested create NO garantizan esto en PostgreSQL.
+          for (const win of windowsData) {
+            await tx.quotationWindow.create({
+              data: { ...win, quotation_id: quotation.id },
+            });
+          }
+
+          // Recargar con includes y orderBy para la respuesta
+          return tx.quotation.findUnique({
+            where: { id: quotation.id },
+            include: { quotation_windows: { orderBy: { id: 'asc' } } },
+          });
         });
-      }
 
-      // Recargar con includes y orderBy
-      return tx.quotation.findUnique({
-        where: { id: quotation.id },
-        include: {
-          quotation_windows: { orderBy: { id: 'asc' } },
-        },
-      });
-    });
-    return result;
+        return result;
+      } catch (err) {
+        const isUniqueConflict = err?.code === 'P2002';
+        if (isUniqueConflict && attempt < MAX_RETRIES - 1) {
+          // Otro request confirmó con el mismo número justo antes.
+          // Reintentamos: el COUNT será mayor y obtendremos un número distinto.
+          continue;
+        }
+        if (isUniqueConflict) {
+          throw new ConflictException(
+            'No se pudo generar un número de cotización único tras varios intentos. Por favor intenta de nuevo.',
+          );
+        }
+        throw err;
+      }
+    }
   }
 
   // ─── findAll ─────────────────────────────────────────────────────────────────

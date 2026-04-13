@@ -34,6 +34,19 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         `[${request.method}] ${request.url} → ${status}`,
         exception instanceof Error ? exception.stack : String(exception),
       );
+      // Raw console.error para entornos donde el Logger de NestJS no sea visible
+      // (Neon logs, Railway, Render, etc.)
+      console.error('══════════════════════ SERVER ERROR ══════════════════════');
+      console.error(`Path  : ${request.method} ${request.url}`);
+      console.error(`Error :`, exception);
+      if (exception instanceof Error) {
+        console.error(`Stack :`, exception.stack);
+        const e = exception as any;
+        if (e.code)   console.error(`Prisma code :`, e.code);
+        if (e.meta)   console.error(`Prisma meta :`, JSON.stringify(e.meta));
+        if (e.message) console.error(`Message     :`, e.message);
+      }
+      console.error('══════════════════════════════════════════════════════════');
     }
 
     response.status(status).json({
