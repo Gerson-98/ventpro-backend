@@ -136,7 +136,9 @@ export class QuotationsService {
             reference_image_url: reference_image_url || null,
             quotation_windows: { create: windowsData },
           },
-          include: { quotation_windows: true },
+          include: {
+            quotation_windows: { orderBy: { id: 'asc' } },
+          },
         });
       }, {
         isolationLevel: 'Serializable',
@@ -288,71 +290,36 @@ export class QuotationsService {
         quotationData.include_iva ?? existingQuotation.include_iva ?? false;
       let subTotalAcumulado = 0;
 
-      const existingWindowIds = existingQuotation.quotation_windows.map(
-        (w) => w.id,
-      );
-      const incomingWindowIds =
-        windows?.filter((w) => w.id).map((w) => w.id) || [];
-      const windowsToDelete = existingWindowIds.filter(
-        (id) => !incomingWindowIds.includes(id),
-      );
+      // Eliminar TODAS las ventanas existentes de esta cotización
+      await prisma.quotationWindow.deleteMany({
+        where: { quotation_id: id },
+      });
 
-      if (windowsToDelete.length > 0) {
-        await prisma.quotationWindow.deleteMany({
-          where: { id: { in: windowsToDelete } },
-        });
-      }
-
-      // ── Separar ventanas a crear vs actualizar ────────────────────────────
-      const toCreate = (windows || []).filter((w) => !w.id);
-      const toUpdate = (windows || []).filter((w) => !!w.id);
-
-      // Helper para mapear los datos de una ventana
-      const mapWindowData = (win: NonNullable<typeof windows>[number]) => {
-        const widthInM = win.width_m || 0;
-        const heightInM = win.height_m || 0;
-        const quantity = win.quantity || 1;
-        const priceToUse = win.price_per_m2 || globalPriceForCalc;
-        const windowPriceTotal = widthInM * heightInM * priceToUse * quantity;
-        subTotalAcumulado += windowPriceTotal;
-        return {
-          displayName: win.displayName,
-          width_cm: widthInM * 100,
-          height_cm: heightInM * 100,
-          price: windowPriceTotal,
-          price_per_m2: win.price_per_m2 || null,
-          quantity,
-          options: win.options || {},
-          window_type_id: win.window_type_id,
-          color_id: win.color_id,
-          glass_color_id: win.glass_color_id,
-          ...(win.design_image_url !== undefined && {
-            design_image_url: win.design_image_url,
-          }),
-        };
-      };
-
-      // ── Creates en batch (1 query para N ventanas nuevas) ─────────────────
-      if (toCreate.length > 0) {
-        await prisma.quotationWindow.createMany({
-          data: toCreate.map((win) => ({
-            ...mapWindowData(win),
-            quotation_id: id,
+      // Recrear TODAS en el orden exacto que vienen del frontend
+      if (windows && windows.length > 0) {
+        const windowsData = windows.map((win) => {
+          const widthInM = win.width_m || 0;
+          const heightInM = win.height_m || 0;
+          const quantity = win.quantity || 1;
+          const priceToUse = win.price_per_m2 || globalPriceForCalc;
+          const windowPriceTotal = widthInM * heightInM * priceToUse * quantity;
+          subTotalAcumulado += windowPriceTotal;
+          return {
+            displayName: win.displayName,
+            width_cm: widthInM * 100,
+            height_cm: heightInM * 100,
+            price: windowPriceTotal,
+            price_per_m2: win.price_per_m2 || null,
+            quantity,
+            options: win.options || {},
+            window_type_id: win.window_type_id,
+            color_id: win.color_id,
+            glass_color_id: win.glass_color_id,
             design_image_url: win.design_image_url || null,
-          })),
+            quotation_id: id,
+          };
         });
-      }
-
-      // ── Updates en paralelo (N queries simultáneas, no secuenciales) ──────
-      if (toUpdate.length > 0) {
-        await Promise.all(
-          toUpdate.map((win) =>
-            prisma.quotationWindow.update({
-              where: { id: win.id },
-              data: mapWindowData(win),
-            }),
-          ),
-        );
+        await prisma.quotationWindow.createMany({ data: windowsData });
       }
 
       const totalFinalCalculado = shouldIncludeIva
