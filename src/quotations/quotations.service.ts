@@ -95,9 +95,9 @@ export class QuotationsService {
         price_per_m2: win.price_per_m2 || null,
         quantity,
         options: win.options || {},
-        windowType: { connect: { id: win.window_type_id } },
-        pvcColor: { connect: { id: win.color_id } },
-        glassColor: { connect: { id: win.glass_color_id } },
+        window_type_id: win.window_type_id,
+        color_id: win.color_id,
+        glass_color_id: win.glass_color_id,
       };
     });
 
@@ -123,7 +123,8 @@ export class QuotationsService {
 
         const newQuotationNumber = `${datePrefix}${(todayCount + 1).toString().padStart(2, '0')}`;
 
-        return tx.quotation.create({
+        // Crear la cotización SIN ventanas primero
+        const quotation = await tx.quotation.create({
           data: {
             quotationNumber: newQuotationNumber,
             project,
@@ -134,8 +135,24 @@ export class QuotationsService {
             userId: user.id,
             notes: notes || null,
             reference_image_url: reference_image_url || null,
-            quotation_windows: { create: windowsData },
           },
+        });
+
+        // Crear ventanas una por una secuencialmente para garantizar
+        // que los IDs auto-increment sigan el orden del array.
+        // createMany / nested create NO garantizan esto en PostgreSQL.
+        for (const win of windowsData) {
+          await tx.quotationWindow.create({
+            data: {
+              ...win,
+              quotation_id: quotation.id,
+            },
+          });
+        }
+
+        // Recargar con includes y orderBy
+        return tx.quotation.findUnique({
+          where: { id: quotation.id },
           include: {
             quotation_windows: { orderBy: { id: 'asc' } },
           },
@@ -296,30 +313,36 @@ export class QuotationsService {
       });
 
       // Recrear TODAS en el orden exacto que vienen del frontend
+      // IMPORTANTE: usar inserts secuenciales (for...of) en vez de createMany
+      // porque createMany genera un solo INSERT con múltiples VALUES y
+      // PostgreSQL/Neon NO garantiza que los IDs auto-increment sigan el
+      // orden de las filas en el VALUES — puede asignarlos en cualquier orden.
+      // Con inserts secuenciales cada create obtiene el siguiente ID en orden.
       if (windows && windows.length > 0) {
-        const windowsData = windows.map((win) => {
+        for (const win of windows) {
           const widthInM = win.width_m || 0;
           const heightInM = win.height_m || 0;
           const quantity = win.quantity || 1;
           const priceToUse = win.price_per_m2 || globalPriceForCalc;
           const windowPriceTotal = widthInM * heightInM * priceToUse * quantity;
           subTotalAcumulado += windowPriceTotal;
-          return {
-            displayName: win.displayName,
-            width_cm: widthInM * 100,
-            height_cm: heightInM * 100,
-            price: windowPriceTotal,
-            price_per_m2: win.price_per_m2 || null,
-            quantity,
-            options: win.options || {},
-            window_type_id: win.window_type_id,
-            color_id: win.color_id,
-            glass_color_id: win.glass_color_id,
-            design_image_url: win.design_image_url || null,
-            quotation_id: id,
-          };
-        });
-        await prisma.quotationWindow.createMany({ data: windowsData });
+          await prisma.quotationWindow.create({
+            data: {
+              displayName: win.displayName,
+              width_cm: widthInM * 100,
+              height_cm: heightInM * 100,
+              price: windowPriceTotal,
+              price_per_m2: win.price_per_m2 || null,
+              quantity,
+              options: win.options || {},
+              window_type_id: win.window_type_id,
+              color_id: win.color_id,
+              glass_color_id: win.glass_color_id,
+              design_image_url: win.design_image_url || null,
+              quotation_id: id,
+            },
+          });
+        }
       }
 
       const totalFinalCalculado = shouldIncludeIva
