@@ -132,7 +132,11 @@ export class QuotationsService {
             where: { createdAt: { gte: startOfDay, lt: endOfDay } },
           });
 
-          const newQuotationNumber = `${datePrefix}${(todayCount + 1).toString().padStart(2, '0')}`;
+          // Sumar `attempt` para que cada reintento pruebe un número DISTINTO
+          // aun si COUNT no cambió (la transacción previa hizo rollback y
+          // pgBouncer puede devolver el mismo snapshot a la nueva conexión).
+          const seq = todayCount + 1 + attempt;
+          const newQuotationNumber = `${datePrefix}${seq.toString().padStart(2, '0')}`;
 
           // Crear la cotización SIN ventanas primero
           const quotation = await tx.quotation.create({
