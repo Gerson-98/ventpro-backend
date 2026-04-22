@@ -101,7 +101,7 @@ export class QuotationsService {
       };
     });
 
-    if (include_iva) totalQuotationPrice = totalQuotationPrice * 1.12;
+    if (include_iva) totalQuotationPrice = totalQuotationPrice * 1.05;
 
     // ── Generar quotationNumber sin colisiones bajo alta concurrencia ──────────
     // Patrón: COUNT + INSERT con unique constraint en quotationNumber + retry.
@@ -362,7 +362,7 @@ export class QuotationsService {
       }
 
       const totalFinalCalculado = shouldIncludeIva
-        ? subTotalAcumulado * 1.12
+        ? subTotalAcumulado * 1.05
         : subTotalAcumulado;
 
       return prisma.quotation.update({
