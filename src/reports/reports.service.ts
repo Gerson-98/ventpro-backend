@@ -730,6 +730,73 @@ export class ReportsService {
     return this.generateCutOptimization(order.windows);
   }
 
+  // ─── NUEVO: Optimización global multi-pedido ──────────────────────────────
+  // Fusiona las ventanas de varios pedidos en un solo lote y corre el mismo
+  // algoritmo FFD (generateCutOptimization) para minimizar desperdicio global.
+  // Devuelve además una lista de ventanas con su proyecto para que el frontend
+  // pueda identificar qué V# pertenece a qué pedido.
+  async generateMultiOrderCutOptimization(orderIds: number[]) {
+    const orders = await this.prisma.order.findMany({
+      where: { id: { in: orderIds } },
+      include: {
+        windows: {
+          include: { windowType: true, pvcColor: true, glassColor: true },
+        },
+      },
+    });
+    if (orders.length === 0) {
+      throw new NotFoundException('No se encontraron pedidos');
+    }
+    // Preservar orden de orderIds solicitado
+    const ordersSorted = orderIds
+      .map((id) => orders.find((o) => o.id === id))
+      .filter((o): o is typeof orders[number] => !!o);
+
+    // Merge windows en un solo array manteniendo el orden: pedido1.ventanas, pedido2.ventanas, ...
+    const mergedWindows: any[] = [];
+    const windowSummaries: Array<{
+      index: number;
+      label: string;
+      orderId: number;
+      project: string;
+      windowTypeName: string;
+      pvcColor: string;
+      glassColor: string;
+      width_cm: number;
+      height_cm: number;
+      quantity: number;
+      hasMosquitero: boolean;
+    }> = [];
+
+    ordersSorted.forEach((order) => {
+      order.windows.forEach((w) => {
+        mergedWindows.push(w);
+        const options = (w.options as Record<string, string>) || {};
+        windowSummaries.push({
+          index: mergedWindows.length, // 1-based; coincide con V# interno (wi+1)
+          label: `V${mergedWindows.length}`,
+          orderId: order.id,
+          project: order.project,
+          windowTypeName: w.windowType?.name ?? '',
+          pvcColor: w.pvcColor?.name ?? '',
+          glassColor: w.glassColor?.name ?? '',
+          width_cm: Number(w.width_cm),
+          height_cm: Number(w.height_cm),
+          quantity: w.quantity || 1,
+          hasMosquitero: options['mosquitero'] === 'con_mosquitero',
+        });
+      });
+    });
+
+    const optimization = await this.generateCutOptimization(mergedWindows);
+
+    return {
+      optimization,
+      windows: windowSummaries,
+      orders: ordersSorted.map((o) => ({ id: o.id, project: o.project })),
+    };
+  }
+
   async generateGlassCutReport(orderId: number) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },

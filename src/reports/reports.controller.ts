@@ -3,10 +3,13 @@
 import {
   Controller,
   Get,
+  Post,
+  Body,
   Param,
   Query,
   ParseIntPipe,
   UseGuards,
+  BadRequestException,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ReportsService } from './reports.service';
@@ -33,6 +36,24 @@ export class ReportsController {
     @Param('orderId', ParseIntPipe) orderId: number,
   ) {
     return this.reportsService.generateCutOptimizationReport(orderId);
+  }
+
+  // ─── NUEVO: Optimización de corte global para múltiples pedidos ──────────
+  // Ejecuta el algoritmo FFD sobre todas las ventanas de los pedidos
+  // seleccionados tratadas como un solo lote, minimizando desperdicio.
+  // Retorna además la lista de ventanas con su proyecto para identificación.
+  @Post('orders/optimize-cuts')
+  generateMultiOrderCutOptimization(
+    @Body() body: { orderIds: number[] },
+  ) {
+    if (!body?.orderIds || !Array.isArray(body.orderIds) || body.orderIds.length === 0) {
+      throw new BadRequestException('Debe proporcionar al menos un orderId');
+    }
+    const ids = body.orderIds.map((v) => Number(v)).filter((v) => Number.isInteger(v) && v > 0);
+    if (ids.length === 0) {
+      throw new BadRequestException('orderIds inválidos');
+    }
+    return this.reportsService.generateMultiOrderCutOptimization(ids);
   }
 
   // ─── NUEVO: Optimización de corte de vidrio ─────────────────────────────────
