@@ -103,7 +103,7 @@ export class QuotationsService {
 
     if (include_iva) totalQuotationPrice = totalQuotationPrice * 1.05;
 
-    // ── Generar quotationNumber sin colisiones bajo alta concurrencia ──────────
+    // ── Generar quotationNumber sidn colisiones bajo alta concurrencia ──────────
     // Patrón: COUNT + INSERT con unique constraint en quotationNumber + retry.
     //
     // Por qué NO usamos pg_advisory_xact_lock():
