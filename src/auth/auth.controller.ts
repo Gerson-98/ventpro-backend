@@ -13,12 +13,17 @@ import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 
+// Frontend (ventpro-frontend.onrender.com) y backend (ventpro-backend-yah0.onrender.com)
+// son cross-site bajo la PSL (*.onrender.com), por lo que la cookie del refresh
+// debe ser SameSite=None + Secure en producción para que viaje en POST cross-site.
+// Path '/auth' permite que /auth/refresh Y /auth/logout reciban la cookie
+// (el path anterior '/auth/refresh' impedía revocar el token en el logout).
 const REFRESH_COOKIE_OPTIONS = (isProduction: boolean) => ({
   httpOnly: true,
   secure: isProduction,
-  sameSite: 'lax' as const,
-  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 días en ms
-  path: '/auth/refresh',
+  sameSite: (isProduction ? 'none' : 'lax') as 'none' | 'lax',
+  maxAge: 7 * 24 * 60 * 60 * 1000,
+  path: '/auth',
 });
 
 @Controller('auth')
@@ -90,7 +95,7 @@ export class AuthController {
     if (refreshToken) {
       await this.authService.revokeRefreshToken(refreshToken);
     }
-    res.clearCookie('refresh_token', { path: '/auth/refresh' });
+    res.clearCookie('refresh_token', { path: '/auth' });
     return { message: 'Sesión cerrada correctamente' };
   }
 }

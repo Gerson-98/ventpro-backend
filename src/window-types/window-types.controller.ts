@@ -9,6 +9,7 @@ import {
   Patch,
   UseGuards,
 } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { WindowTypesService } from './window-types.service';
 
@@ -30,16 +31,19 @@ export class WindowTypesController {
     return this.windowTypesService.create(data);
   }
 
+  @SkipThrottle()
   @Get()
   findAll() {
     return this.windowTypesService.findAll();
   }
 
+  @SkipThrottle()
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.windowTypesService.findOne(+id);
   }
 
+  @SkipThrottle()
   @Get('by-pvc/:colorId')
   findByPvc(@Param('colorId') colorId: string) {
     return this.windowTypesService.findByPvcColor(Number(colorId));

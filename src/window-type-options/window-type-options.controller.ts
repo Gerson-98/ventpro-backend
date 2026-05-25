@@ -11,6 +11,7 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { WindowTypeOptionsService } from './window-type-options.service';
 import { CreateWindowTypeOptionDto } from './dto/create-window-type-option.dto';
 import { UpdateWindowTypeOptionDto } from './dto/update-window-type-option.dto';
@@ -19,6 +20,7 @@ import { UpdateWindowTypeOptionDto } from './dto/update-window-type-option.dto';
 export class WindowTypeOptionsController {
   constructor(private readonly service: WindowTypeOptionsService) {}
 
+  @SkipThrottle()
   @Get()
   findAll(@Query('windowTypeId') windowTypeId?: string) {
     if (windowTypeId)

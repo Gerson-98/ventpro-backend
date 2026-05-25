@@ -34,8 +34,13 @@ import { AppSettingsModule } from './app-settings/app-settings.module';
 
 @Module({
   imports: [
+    // En Render varios usuarios pueden compartir IP de salida. El throttler
+    // global cuenta por IP, así que un equipo de 3-5 vendedores trabajando
+    // sobre cotizaciones grandes (muchas llamadas a /cost-calculator/window)
+    // se acerca al límite con 1000 req/min. Subimos a 5000 y mantenemos
+    // 'login' estricto. Los GETs de catálogos están marcados @SkipThrottle.
     ThrottlerModule.forRoot([
-      { name: 'global', ttl: 60000, limit: 1000 },
+      { name: 'global', ttl: 60000, limit: 5000 },
       { name: 'login', ttl: 60000, limit: 5 },
     ]),
     OrdersModule,

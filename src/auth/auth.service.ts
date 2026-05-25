@@ -44,7 +44,8 @@ export class AuthService {
 
   /**
    * Valida el refresh_token, genera nuevos tokens (rotación).
-   * Invalida el refresh_token anterior.
+   * Revoca SOLO el refresh_token usado (no otros activos del mismo usuario),
+   * para que sesiones en otras pestañas/dispositivos sigan funcionando.
    */
   async refresh(refreshToken: string): Promise<{ access_token: string; refresh_token: string }> {
     const stored = await this.prisma.refreshToken.findUnique({
@@ -56,7 +57,11 @@ export class AuthService {
       throw new UnauthorizedException('Refresh token inválido o expirado');
     }
 
-    // Rotación: genera nuevo refresh token (invalida el anterior)
+    await this.prisma.refreshToken.update({
+      where: { token: refreshToken },
+      data: { revokedAt: new Date() },
+    });
+
     const new_refresh_token = await this.generateRefreshToken(stored.userId);
 
     const payload = {
@@ -82,16 +87,11 @@ export class AuthService {
   }
 
   /**
-   * Genera un refresh_token criptográficamente seguro,
-   * revoca todos los anteriores del usuario (seguridad contra robo).
+   * Genera un refresh_token criptográficamente seguro.
+   * No revoca tokens previos: cada sesión (pestaña/dispositivo) mantiene
+   * su propio token y rota solo el suyo en cada refresh.
    */
   private async generateRefreshToken(userId: number): Promise<string> {
-    // Revoca todos los refresh tokens activos del usuario
-    await this.prisma.refreshToken.updateMany({
-      where: { userId, revokedAt: null },
-      data: { revokedAt: new Date() },
-    });
-
     const token = crypto.randomBytes(64).toString('hex');
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + this.REFRESH_TOKEN_EXPIRY_DAYS);

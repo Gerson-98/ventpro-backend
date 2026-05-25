@@ -1,4 +1,5 @@
 import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PvcColorsService } from './pvc-colors.service';
 import { CreatePvcColorDto } from './dto/create-pvc-color.dto';
@@ -13,6 +14,7 @@ export class PvcColorsController {
     return this.pvcColorsService.create(createPvcColorDto);
   }
 
+  @SkipThrottle()
   @Get()
   async findAll() {
     const result = await this.pvcColorsService.findAll();

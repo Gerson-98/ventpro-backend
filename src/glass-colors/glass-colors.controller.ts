@@ -1,4 +1,5 @@
 import { Controller, Get, Post, Body, Patch, Param, Delete, UseGuards } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { GlassColorsService } from './glass-colors.service';
 
@@ -12,6 +13,7 @@ export class GlassColorsController {
     return this.glassColorsService.create(body);
   }
 
+  @SkipThrottle()
   @Get()
   findAll() {
     return this.glassColorsService.findAll();

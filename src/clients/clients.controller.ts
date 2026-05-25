@@ -8,6 +8,7 @@ import {
   Param,
   UseGuards,
 } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ClientsService } from './clients.service';
 import { ClientStatus } from '@prisma/client';
@@ -17,6 +18,7 @@ import { ClientStatus } from '@prisma/client';
 export class ClientsController {
   constructor(private readonly clientsService: ClientsService) {}
 
+  @SkipThrottle()
   @Get()
   findAll() {
     return this.clientsService.findAll();
