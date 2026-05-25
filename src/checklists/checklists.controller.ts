@@ -13,6 +13,7 @@ import {
   Request,
   BadRequestException,
 } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
@@ -40,6 +41,7 @@ function parseChecklistType(raw: string): ChecklistType {
 export class ChecklistsController {
   constructor(private readonly checklistsService: ChecklistsService) {}
 
+  @SkipThrottle()
   @Get('templates')
   findAllTemplates() {
     return this.checklistsService.findAllTemplates();
@@ -66,6 +68,7 @@ export class ChecklistsController {
     return this.checklistsService.removeTemplate(id);
   }
 
+  @SkipThrottle()
   @Get('order/:orderId')
   findByOrder(@Param('orderId', ParseIntPipe) orderId: number) {
     return this.checklistsService.findByOrder(orderId);

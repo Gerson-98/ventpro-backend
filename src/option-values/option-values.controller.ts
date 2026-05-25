@@ -11,6 +11,7 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { OptionValuesService } from './option-values.service';
 import { CreateOptionValueDto } from './dto/create-option-value.dto';
 import { UpdateOptionValueDto } from './dto/update-option-value.dto';
@@ -19,12 +20,14 @@ import { UpdateOptionValueDto } from './dto/update-option-value.dto';
 export class OptionValuesController {
   constructor(private readonly service: OptionValuesService) {}
 
+  @SkipThrottle()
   @Get()
   findAll(@Query('groupId') groupId?: string) {
     if (groupId) return this.service.findByGroup(Number(groupId));
     return this.service.findAll();
   }
 
+  @SkipThrottle()
   @Get(':id')
   findOne(@Param('id', ParseIntPipe) id: number) {
     return this.service.findOne(id);

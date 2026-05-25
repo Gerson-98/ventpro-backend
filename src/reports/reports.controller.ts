@@ -11,6 +11,7 @@ import {
   UseGuards,
   BadRequestException,
 } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ReportsService } from './reports.service';
 
@@ -19,11 +20,13 @@ import { ReportsService } from './reports.service';
 export class ReportsController {
   constructor(private readonly reportsService: ReportsService) {}
 
+  @SkipThrottle()
   @Get('order/:orderId/profiles')
   generateProfilesReport(@Param('orderId', ParseIntPipe) orderId: number) {
     return this.reportsService.generateProfilesReport(orderId);
   }
 
+  @SkipThrottle()
   @Get('quotation/:quotationId/profiles')
   generateQuotationProfilesReport(
     @Param('quotationId', ParseIntPipe) quotationId: number,
@@ -31,6 +34,7 @@ export class ReportsController {
     return this.reportsService.generateProfilesReportByQuotation(quotationId);
   }
 
+  @SkipThrottle()
   @Get('order/:orderId/optimize-cuts')
   generateCutOptimizationReport(
     @Param('orderId', ParseIntPipe) orderId: number,
@@ -57,12 +61,14 @@ export class ReportsController {
   }
 
   // ─── NUEVO: Optimización de corte de vidrio ─────────────────────────────────
+  @SkipThrottle()
   @Get('order/:orderId/glass-cuts')
   generateGlassCutReport(@Param('orderId', ParseIntPipe) orderId: number) {
     return this.reportsService.generateGlassCutReport(orderId);
   }
 
   // ─── NUEVO: Glass cut para cotizaciones ─────────────────────────────────────
+  @SkipThrottle()
   @Get('quotation/:quotationId/glass-cuts')
   generateGlassCutByQuotation(
     @Param('quotationId', ParseIntPipe) quotationId: number,
@@ -71,6 +77,7 @@ export class ReportsController {
   }
 
   // ─── NUEVO: Resumen financiero de un pedido específico ──────────────────
+  @SkipThrottle()
   @Get('order/:orderId/financial')
   getOrderFinancialSummary(@Param('orderId', ParseIntPipe) orderId: number) {
     return this.reportsService.getOrderFinancialSummary(orderId);
@@ -78,6 +85,7 @@ export class ReportsController {
 
   // ─── NUEVO: Dashboard de ganancias con filtros opcionales ───────────────
   // GET /reports/dashboard/profits?fromDate=2025-01-01&toDate=2025-12-31&status=completado
+  @SkipThrottle()
   @Get('dashboard/profits')
   getDashboardProfits(
     @Query('fromDate') fromDate?: string,

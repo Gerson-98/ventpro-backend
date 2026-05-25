@@ -19,6 +19,7 @@ export class GlassColorsController {
     return this.glassColorsService.findAll();
   }
 
+  @SkipThrottle()
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.glassColorsService.findOne(+id);

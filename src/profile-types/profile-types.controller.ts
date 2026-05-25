@@ -1,4 +1,5 @@
 import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { ProfileTypesService } from './profile-types.service';
 import { CreateProfileTypeDto } from './dto/create-profile-type.dto';
 import { UpdateProfileTypeDto } from './dto/update-profile-type.dto';
@@ -12,11 +13,13 @@ export class ProfileTypesController {
     return this.profileTypesService.create(createProfileTypeDto);
   }
 
+  @SkipThrottle()
   @Get()
   findAll() {
     return this.profileTypesService.findAll();
   }
 
+  @SkipThrottle()
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.profileTypesService.findOne(+id);
