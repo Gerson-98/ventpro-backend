@@ -293,6 +293,12 @@ model Quotation {
   status              QuotationStatus @default(en_proceso)
   price_per_m2        Float
   total_price         Float?
+  // Costo total interno calculado al guardar (materiales + accesorios +
+  // vidrios). Se persiste para que al reabrir la cotización para editar el
+  // "precio sugerido mínimo" mostrado no fluctúe con cambios posteriores en
+  // precios de materiales o margen de ganancia.
+  costo_total_proyecto    Float?
+  precio_sugerido_minimo  Float?
   clientId            Int?
   notes               String?
   reference_image_url String?

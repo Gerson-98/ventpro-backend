@@ -13,6 +13,7 @@ import { UpdateQuotationDto } from './dto/update-quotation.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { WindowsService } from '../windows/windows.service';
 import { OrderStatus, QuotationStatus } from '@prisma/client';
+import { CostCalculatorService } from '../cost-calculator/cost-calculator.service';
 
 interface AuthUser {
   id: number;
@@ -25,7 +26,51 @@ export class QuotationsService {
   constructor(
     private prisma: PrismaService,
     private windowsService: WindowsService,
+    private costCalculator: CostCalculatorService,
   ) {}
+
+  /**
+   * Calcula y devuelve costo total + precio sugerido mínimo para un set de
+   * ventanas. Snapshot: se llama al guardar para persistir los valores en la
+   * cotización; así, al reabrir para editar, el "precio sugerido" mostrado es
+   * el que el usuario vio al guardar, no uno recalculado con precios actuales
+   * de materiales o margen actual.
+   */
+  private async snapshotPrecioSugerido(
+    windows: Array<{
+      window_type_id: number;
+      width_cm: number;
+      height_cm: number;
+      color_id: number;
+      glass_color_id?: number | null;
+      options?: any;
+      quantity?: number;
+    }>,
+  ): Promise<{ costo_total_proyecto: number; precio_sugerido_minimo: number } | null> {
+    if (!windows || windows.length === 0) return null;
+    try {
+      const payload = windows.map((w) => ({
+        window_type_id: Number(w.window_type_id),
+        width_cm: Number(w.width_cm),
+        height_cm: Number(w.height_cm),
+        color_id: Number(w.color_id),
+        glass_color_id: w.glass_color_id ? Number(w.glass_color_id) : undefined,
+        options: (w.options as Record<string, string>) || {},
+        quantity: Number(w.quantity) || 1,
+      }));
+      const result = await this.costCalculator.calcularCostoCotizacion(payload);
+      return {
+        costo_total_proyecto: result.costo_total_proyecto,
+        precio_sugerido_minimo: result.precio_sugerido_minimo,
+      };
+    } catch {
+      // Si el cálculo falla (ej. tipo de ventana sin catálogo), NO bloqueamos
+      // el save — la cotización debe poder guardarse aunque el motor de
+      // costos tenga un dato faltante. Los campos quedan null y la UI
+      // los maneja como ausentes.
+      return null;
+    }
+  }
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -103,6 +148,10 @@ export class QuotationsService {
 
     if (include_iva) totalQuotationPrice = totalQuotationPrice * 1.05;
 
+    // Snapshot del precio sugerido en el momento de guardado.
+    // Si falla, los campos quedan null y el modal cae a su comportamiento previo.
+    const costSnapshot = await this.snapshotPrecioSugerido(windowsData);
+
     // ── Generar quotationNumber sidn colisiones bajo alta concurrencia ──────────
     // Patrón: COUNT + INSERT con unique constraint en quotationNumber + retry.
     //
@@ -147,6 +196,8 @@ export class QuotationsService {
               clientId,
               include_iva: !!include_iva,
               total_price: totalQuotationPrice,
+              costo_total_proyecto: costSnapshot?.costo_total_proyecto ?? null,
+              precio_sugerido_minimo: costSnapshot?.precio_sugerido_minimo ?? null,
               userId: user.id,
               notes: notes || null,
               reference_image_url: reference_image_url || null,
@@ -334,6 +385,15 @@ export class QuotationsService {
       // PostgreSQL/Neon NO garantiza que los IDs auto-increment sigan el
       // orden de las filas en el VALUES — puede asignarlos en cualquier orden.
       // Con inserts secuenciales cada create obtiene el siguiente ID en orden.
+      const windowsForSnapshot: Array<{
+        window_type_id: number;
+        width_cm: number;
+        height_cm: number;
+        color_id: number;
+        glass_color_id?: number | null;
+        options?: any;
+        quantity?: number;
+      }> = [];
       if (windows && windows.length > 0) {
         for (const win of windows) {
           const widthInM = win.width_m || 0;
@@ -358,6 +418,15 @@ export class QuotationsService {
               quotation_id: id,
             },
           });
+          windowsForSnapshot.push({
+            window_type_id: win.window_type_id,
+            width_cm: widthInM * 100,
+            height_cm: heightInM * 100,
+            color_id: win.color_id,
+            glass_color_id: win.glass_color_id ?? null,
+            options: win.options || {},
+            quantity,
+          });
         }
       }
 
@@ -365,12 +434,20 @@ export class QuotationsService {
         ? subTotalAcumulado * 1.05
         : subTotalAcumulado;
 
+      // Snapshot del precio sugerido para la nueva versión de las ventanas.
+      const costSnapshot = await this.snapshotPrecioSugerido(
+        windowsForSnapshot,
+      );
+
       return prisma.quotation.update({
         where: { id },
         data: {
           ...quotationData,
           include_iva: shouldIncludeIva,
           total_price: totalFinalCalculado,
+          costo_total_proyecto: costSnapshot?.costo_total_proyecto ?? null,
+          precio_sugerido_minimo:
+            costSnapshot?.precio_sugerido_minimo ?? null,
         },
         include: {
           client: true,
