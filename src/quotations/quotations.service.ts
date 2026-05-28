@@ -370,7 +370,7 @@ export class QuotationsService {
       options: any;
       window_type_id: number;
       color_id: number;
-      glass_color_id?: number | null;
+      glass_color_id: number | null;
       design_image_url?: string | null;
       quotation_id: number;
     }> = [];
@@ -404,7 +404,7 @@ export class QuotationsService {
           options: win.options || {},
           window_type_id: win.window_type_id,
           color_id: win.color_id,
-          glass_color_id: win.glass_color_id,
+          glass_color_id: win.glass_color_id ?? null,
           design_image_url: win.design_image_url || null,
           quotation_id: id,
         });
