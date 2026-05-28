@@ -360,20 +360,7 @@ export class QuotationsService {
     // Solución: calcular todo antes de abrir la transacción, igual que en create.
     let subTotalAcumulado = 0;
 
-    const windowsData: Array<{
-      displayName?: string;
-      width_cm: number;
-      height_cm: number;
-      price: number;
-      price_per_m2: number | null;
-      quantity: number;
-      options: any;
-      window_type_id: number;
-      color_id: number;
-      glass_color_id: number;
-      design_image_url?: string | null;
-      quotation_id: number;
-    }> = [];
+    const windowsData: Parameters<typeof this.prisma.quotationWindow.create>[0]['data'][] = [];
 
     const windowsForSnapshot: Array<{
       window_type_id: number;
@@ -404,7 +391,7 @@ export class QuotationsService {
           options: win.options || {},
           window_type_id: win.window_type_id,
           color_id: win.color_id,
-          glass_color_id: Number(win.glass_color_id),
+          glass_color_id: win.glass_color_id,
           design_image_url: win.design_image_url || null,
           quotation_id: id,
         });
@@ -440,13 +427,8 @@ export class QuotationsService {
 
       // Recrear TODAS en el orden exacto que vienen del frontend.
       // Inserts secuenciales para garantizar orden de IDs auto-increment.
-      for (const { glass_color_id, ...winData } of windowsData) {
-        await prisma.quotationWindow.create({
-          data: {
-            ...winData,
-            ...(glass_color_id ? { glass_color_id } : {}),
-          },
-        });
+      for (const winData of windowsData) {
+        await prisma.quotationWindow.create({ data: winData });
       }
 
       return prisma.quotation.update({
