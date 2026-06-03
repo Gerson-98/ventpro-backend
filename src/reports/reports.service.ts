@@ -545,7 +545,13 @@ export class ReportsService {
         orderWhere.createdAt.gte = new Date(filters.fromDate);
       if (filters.toDate) {
         const to = new Date(filters.toDate);
-        to.setHours(23, 59, 59, 999);
+        // Usar setUTCHours(29,...) en lugar de setHours(23,...):
+        // new Date("2026-05-31") devuelve medianoche UTC. setHours() aplica en
+        // zona horaria LOCAL del servidor (UTC-6 en Guatemala), produciendo solo
+        // 05:59:59 UTC — excluyendo toda la jornada laboral. setUTCHours(29,…)
+        // suma 29 h desde UTC midnight → 2026-06-01T05:59:59.999Z, que equivale
+        // al final del día en hora local guatemalteca (UTC-6).
+        to.setUTCHours(29, 59, 59, 999);
         orderWhere.createdAt.lte = to;
       }
     }
@@ -620,7 +626,7 @@ export class ReportsService {
         quotationWhere.createdAt.gte = new Date(filters.fromDate);
       if (filters.toDate) {
         const to = new Date(filters.toDate);
-        to.setHours(23, 59, 59, 999);
+        to.setUTCHours(29, 59, 59, 999); // mismo criterio que el filtro de pedidos
         quotationWhere.createdAt.lte = to;
       }
     }
