@@ -1,11 +1,19 @@
-// ── Optimizador 2D de corte de vidrio (MaxRects + meta-solver) ──────────────
-// Ejecuta varias combinaciones de (orden de piezas × heurística de fit ×
-// regla de split) y devuelve la mejor (menos planchas; tiebreak: menor área
-// desperdiciada). La versión previa hacía una sola pasada BSSF con split
-// horizontal fijo y first-fit por plancha; eso desperdiciaba planchas cuando
-// piezas que cabían juntas terminaban en planchas distintas.
+// ── Optimizador 2D de corte de vidrio (columnas/shelf guillotina + meta-solver) ─
 //
-// Complejidad: 8 piezas × ~24 combinaciones × O(n²) por corrida ≈ pocos ms.
+// El vidrio se corta SIEMPRE con cortes guillotina (de borde a borde): no se
+// puede hacer un corte en "L". Por eso la versión anterior basada en MaxRects,
+// aunque minimizaba área, generaba layouts:
+//   1) físicamente NO cortables (piezas encajadas en escalón),
+//   2) visualmente desordenados (cada pieza rotada a su antojo).
+//
+// Esta versión empaca por COLUMNAS (franjas verticales) o por FILAS (franjas
+// horizontales): agrupa piezas de ancho similar en una misma columna y las
+// apila. El resultado es una cuadrícula ordenada, 100% cortable con guillotina,
+// y con poco desperdicio. Un meta-solver prueba varias combinaciones de
+// (orden × eje × rotación) y se queda con la mejor (menos planchas; desempate:
+// menor área desperdiciada).
+//
+// Complejidad: ~50 piezas × ~40 combinaciones × O(n·columnas) ≈ pocos ms.
 
 interface InputPiece {
   width: number;
@@ -19,270 +27,259 @@ interface PlacedPiece {
   height: number;
   label: string;
 }
-interface FreeRect {
+interface WasteRect {
   x: number;
   y: number;
-  w: number;
-  h: number;
-}
-interface Sheet {
-  placed: PlacedPiece[];
-  freeRects: FreeRect[];
+  width: number;
+  height: number;
 }
 
 export interface PackedSheet {
   pieces: PlacedPiece[];
-  wasteRects: { x: number; y: number; width: number; height: number }[];
+  wasteRects: WasteRect[];
 }
-
-type Heuristic = 'BSSF' | 'BLSF' | 'BAF';
-type SplitRule = 'SAS' | 'LAS'; // Shorter / Longer Axis Split
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
 const EPS = 0.5;
+// Dos piezas se consideran de "mismo ancho" (apilables en la misma columna sin
+// generar desperdicio horizontal apreciable) si difieren ≤ WIDTH_TOL cm.
+const WIDTH_TOL = 2.0;
 
-function newSheet(sheetW: number, sheetH: number): Sheet {
-  return { placed: [], freeRects: [{ x: 0, y: 0, w: sheetW, h: sheetH }] };
+type Axis = 'col' | 'row';
+
+// ── Estructuras internas del empaque por columnas ─────────────────────────────
+interface Column {
+  x: number; // posición horizontal de la franja
+  width: number; // ancho de la franja (lo fija la 1ª pieza, la más ancha)
+  usedH: number; // altura ya consumida apilando desde arriba
+}
+interface WorkSheet {
+  columns: Column[];
+  placed: PlacedPiece[];
 }
 
-function scoreFit(
-  fr: FreeRect,
-  pw: number,
-  ph: number,
-  heuristic: Heuristic,
-): number {
-  const leftoverW = fr.w - pw;
-  const leftoverH = fr.h - ph;
-  switch (heuristic) {
-    case 'BSSF':
-      return Math.min(leftoverW, leftoverH);
-    case 'BLSF':
-      return Math.max(leftoverW, leftoverH);
-    case 'BAF':
-      // Best Area Fit: priorizar el rect cuya área sobrante es mínima;
-      // empate por short-side.
-      return fr.w * fr.h - pw * ph;
-  }
-}
-
-function splitFreeRect(
-  fr: FreeRect,
-  fw: number,
-  fh: number,
-  rule: SplitRule,
-): FreeRect[] {
-  // Decide si la división horizontal o vertical produce la franja "buena" más
-  // grande (LAS) o más chica (SAS). SAS suele conservar zonas amplias para
-  // piezas grandes; LAS funciona mejor con mezclas de piezas alargadas.
-  const dw = fr.w - fw;
-  const dh = fr.h - fh;
-  const splitHorizontal =
-    rule === 'SAS' ? dw <= dh : dw > dh;
-
-  const out: FreeRect[] = [];
-  if (splitHorizontal) {
-    // Corte horizontal: la franja inferior hereda el ancho completo;
-    // la franja derecha hereda solo la altura de la pieza.
-    if (dw > EPS) {
-      out.push({ x: fr.x + fw, y: fr.y, w: dw, h: fh });
-    }
-    if (dh > EPS) {
-      out.push({ x: fr.x, y: fr.y + fh, w: fr.w, h: dh });
-    }
-  } else {
-    // Corte vertical: la franja derecha hereda la altura completa;
-    // la franja inferior hereda solo el ancho de la pieza.
-    if (dw > EPS) {
-      out.push({ x: fr.x + fw, y: fr.y, w: dw, h: fr.h });
-    }
-    if (dh > EPS) {
-      out.push({ x: fr.x, y: fr.y + fh, w: fw, h: dh });
-    }
-  }
-  return out;
-}
-
-// Elimina free rects contenidos completamente dentro de otros (depuración
-// que el algoritmo previo omitía y que dejaba fragmentos sin uso).
-function pruneFreeRects(rects: FreeRect[]): FreeRect[] {
-  const out: FreeRect[] = [];
-  for (let i = 0; i < rects.length; i++) {
-    const a = rects[i];
-    let contained = false;
-    for (let j = 0; j < rects.length; j++) {
-      if (i === j) continue;
-      const b = rects[j];
-      if (
-        a.x >= b.x - EPS &&
-        a.y >= b.y - EPS &&
-        a.x + a.w <= b.x + b.w + EPS &&
-        a.y + a.h <= b.y + b.h + EPS
-      ) {
-        contained = true;
-        break;
-      }
-    }
-    if (!contained) out.push(a);
-  }
-  return out;
-}
-
-interface FitCandidate {
-  sheetIdx: number;
-  fr: FreeRect;
-  rotated: boolean;
-  score: number;
-}
-
-// Busca el mejor lugar para la pieza CONSIDERANDO TODAS las planchas abiertas
-// (no la primera donde cabe — eso era la limitación principal del algoritmo
-// anterior). Si no cabe en ninguna, retorna null y se abre plancha nueva.
-function findBestFit(
-  sheets: Sheet[],
-  pw: number,
-  ph: number,
-  heuristic: Heuristic,
-): FitCandidate | null {
-  let best: FitCandidate | null = null;
-  for (let si = 0; si < sheets.length; si++) {
-    for (const fr of sheets[si].freeRects) {
-      if (pw <= fr.w + EPS && ph <= fr.h + EPS) {
-        const s = scoreFit(fr, pw, ph, heuristic);
-        if (!best || s < best.score) {
-          best = { sheetIdx: si, fr, rotated: false, score: s };
-        }
-      }
-      if (ph <= fr.w + EPS && pw <= fr.h + EPS) {
-        const s = scoreFit(fr, ph, pw, heuristic);
-        if (!best || s < best.score) {
-          best = { sheetIdx: si, fr, rotated: true, score: s };
-        }
-      }
-    }
-  }
-  return best;
-}
-
-function placeIntoSheet(
-  sheet: Sheet,
-  fr: FreeRect,
-  fw: number,
-  fh: number,
+function placeInCol(
+  sheet: WorkSheet,
+  col: Column,
+  w: number,
+  h: number,
   label: string,
-  rule: SplitRule,
 ): void {
-  const px = fr.x;
-  const py = fr.y;
-
   sheet.placed.push({
-    x: round1(px),
-    y: round1(py),
-    width: round1(fw),
-    height: round1(fh),
+    x: round1(col.x),
+    y: round1(col.usedH),
+    width: round1(w),
+    height: round1(h),
     label,
   });
-
-  // Reemplazar el free rect usado por los sub-rects resultantes del split.
-  sheet.freeRects = sheet.freeRects.filter((f) => f !== fr);
-  sheet.freeRects.push(...splitFreeRect(fr, fw, fh, rule));
-
-  // Recortar cualquier free rect que se solape con la pieza colocada.
-  const px2 = px + fw;
-  const py2 = py + fh;
-  const newRects: FreeRect[] = [];
-  for (const f of sheet.freeRects) {
-    const fx2 = f.x + f.w;
-    const fy2 = f.y + f.h;
-    const noOverlap = f.x >= px2 || fx2 <= px || f.y >= py2 || fy2 <= py;
-    if (noOverlap) {
-      if (f.w > EPS && f.h > EPS) newRects.push(f);
-      continue;
-    }
-    // Solapamiento: dividir el free rect en hasta 4 sub-rects que rodeen la pieza.
-    if (f.x < px) {
-      newRects.push({ x: f.x, y: f.y, w: px - f.x, h: f.h });
-    }
-    if (fx2 > px2) {
-      newRects.push({ x: px2, y: f.y, w: fx2 - px2, h: f.h });
-    }
-    if (f.y < py) {
-      newRects.push({ x: f.x, y: f.y, w: f.w, h: py - f.y });
-    }
-    if (fy2 > py2) {
-      newRects.push({ x: f.x, y: py2, w: f.w, h: fy2 - py2 });
-    }
-  }
-  sheet.freeRects = pruneFreeRects(
-    newRects.filter((r) => r.w > EPS && r.h > EPS),
-  );
+  col.usedH += h;
 }
 
-function runPack(
-  pieces: InputPiece[],
-  sheetW: number,
-  sheetH: number,
-  heuristic: Heuristic,
-  rule: SplitRule,
-): Sheet[] {
-  const sheets: Sheet[] = [];
-  for (const piece of pieces) {
-    // Pre-rotación: si una orientación no cabe en plancha vacía pero la
-    // otra sí, forzar la que cabe. Cubre piezas con un lado > sheet edge.
-    const fitsNormal = piece.width <= sheetW + EPS && piece.height <= sheetH + EPS;
-    const fitsRotated = piece.height <= sheetW + EPS && piece.width <= sheetH + EPS;
-    if (!fitsNormal && !fitsRotated) {
-      // Pieza imposible — la colocamos como sheet propia para no perderla.
-      const s = newSheet(sheetW, sheetH);
-      s.placed.push({
-        x: 0,
-        y: 0,
-        width: piece.width,
-        height: piece.height,
-        label: piece.label,
-      });
-      s.freeRects = [];
-      sheets.push(s);
-      continue;
+function colFits(col: Column, w: number, h: number, H: number): boolean {
+  return w <= col.width + EPS && col.usedH + h <= H + EPS;
+}
+
+// Coloca UNA pieza respetando el orden de planchas (llena la más temprana antes
+// de abrir una nueva → minimiza # de planchas). Dentro de una plancha:
+//   1) columna existente del mismo ancho (apila, máxima prolijidad),
+//   2) columna nueva (franja propia, ancho exacto, sin desperdicio horizontal),
+//   3) cualquier columna existente donde quepa (último recurso),
+//   4) plancha nueva.
+function placePiece(
+  sheets: WorkSheet[],
+  pw: number,
+  ph: number,
+  label: string,
+  W: number,
+  H: number,
+  allowRotate: boolean,
+): void {
+  const orients: Array<[number, number]> = allowRotate
+    ? [
+        [pw, ph],
+        [ph, pw],
+      ]
+    : [[pw, ph]];
+
+  for (const sheet of sheets) {
+    const totalW = sheet.columns.reduce((a, c) => a + c.width, 0);
+
+    let bestTight: { col: Column; w: number; h: number; score: number } | null =
+      null;
+    let bestAny: { col: Column; w: number; h: number; score: number } | null =
+      null;
+    let newCol: { w: number; h: number; x: number } | null = null;
+
+    for (const [w, h] of orients) {
+      if (w > W + EPS || h > H + EPS) continue;
+      for (const col of sheet.columns) {
+        if (!colFits(col, w, h, H)) continue;
+        const ww = col.width - w; // desperdicio horizontal
+        const lh = H - col.usedH - h; // hueco vertical restante
+        const score = ww * 1000 + lh; // prioriza ajuste de ancho, luego de alto
+        if (!bestAny || score < bestAny.score) bestAny = { col, w, h, score };
+        if (ww <= WIDTH_TOL && (!bestTight || score < bestTight.score)) {
+          bestTight = { col, w, h, score };
+        }
+      }
+      // Opción de columna nueva en esta plancha (preferir la orientación de
+      // menor ancho → consume menos espacio horizontal).
+      if (totalW + w <= W + EPS && h <= H + EPS) {
+        if (!newCol || w < newCol.w) newCol = { w, h, x: totalW };
+      }
     }
 
-    const candidate = findBestFit(sheets, piece.width, piece.height, heuristic);
-    if (candidate) {
-      const fw = candidate.rotated ? piece.height : piece.width;
-      const fh = candidate.rotated ? piece.width : piece.height;
-      placeIntoSheet(
-        sheets[candidate.sheetIdx],
-        candidate.fr,
-        fw,
-        fh,
-        piece.label,
-        rule,
-      );
-      continue;
+    if (bestTight) {
+      placeInCol(sheet, bestTight.col, bestTight.w, bestTight.h, label);
+      return;
     }
+    if (newCol) {
+      const col: Column = { x: newCol.x, width: newCol.w, usedH: 0 };
+      sheet.columns.push(col);
+      placeInCol(sheet, col, newCol.w, newCol.h, label);
+      return;
+    }
+    if (bestAny) {
+      placeInCol(sheet, bestAny.col, bestAny.w, bestAny.h, label);
+      return;
+    }
+    // Esta plancha no admite la pieza → probar la siguiente.
+  }
 
-    // No cupo en ninguna plancha existente — abrir una nueva.
-    const sheet = newSheet(sheetW, sheetH);
+  // Ninguna plancha existente la admite → abrir plancha nueva.
+  const sheet: WorkSheet = { columns: [], placed: [] };
+  let chosen: [number, number] | null = null;
+  for (const [w, h] of orients) {
+    if (w <= W + EPS && h <= H + EPS) {
+      chosen = [w, h];
+      break;
+    }
+  }
+  if (!chosen) {
+    // Pieza más grande que la plancha en ambas orientaciones: colocarla sola
+    // para no perderla (caso excepcional, p.ej. medidas mal cargadas).
+    sheet.placed.push({
+      x: 0,
+      y: 0,
+      width: round1(pw),
+      height: round1(ph),
+      label,
+    });
+    sheet.columns.push({ x: 0, width: pw, usedH: ph });
     sheets.push(sheet);
-    const fr = sheet.freeRects[0];
-    // Si solo cabe rotada, elegir esa orientación.
-    const useRotated = !fitsNormal;
-    const fw = useRotated ? piece.height : piece.width;
-    const fh = useRotated ? piece.width : piece.height;
-    placeIntoSheet(sheet, fr, fw, fh, piece.label, rule);
+    return;
   }
-  return sheets;
+  const col: Column = { x: 0, width: chosen[0], usedH: 0 };
+  sheet.columns.push(col);
+  placeInCol(sheet, col, chosen[0], chosen[1], label);
+  sheets.push(sheet);
 }
 
-function scoreSolution(sheets: Sheet[], sheetW: number, sheetH: number): number {
-  // Menor es mejor. Penaliza # planchas primero, luego desperdicio total.
-  const sheetArea = sheetW * sheetH;
-  const totalUsed = sheets.reduce(
-    (sum, s) =>
-      sum + s.placed.reduce((a, p) => a + p.width * p.height, 0),
+// Calcula los rectángulos de desperdicio que teselan exactamente la plancha:
+//   · hueco al pie de cada columna,
+//   · sliver horizontal a la derecha de cada pieza (ancho columna − ancho pieza),
+//   · margen derecho no usado por ninguna columna.
+function buildWaste(sheet: WorkSheet, W: number, H: number): WasteRect[] {
+  const rects: WasteRect[] = [];
+  const totalW = sheet.columns.reduce((a, c) => a + c.width, 0);
+
+  for (const col of sheet.columns) {
+    if (H - col.usedH > EPS) {
+      rects.push({ x: col.x, y: col.usedH, width: col.width, height: H - col.usedH });
+    }
+  }
+  for (const p of sheet.placed) {
+    const col = sheet.columns.find((c) => Math.abs(c.x - p.x) < EPS);
+    if (col && col.width - p.width > EPS) {
+      rects.push({
+        x: p.x + p.width,
+        y: p.y,
+        width: col.width - p.width,
+        height: p.height,
+      });
+    }
+  }
+  if (W - totalW > EPS) {
+    rects.push({ x: totalW, y: 0, width: W - totalW, height: H });
+  }
+
+  return rects
+    .filter((r) => r.width > 1 && r.height > 1)
+    .map((r) => ({
+      x: round1(r.x),
+      y: round1(r.y),
+      width: round1(r.width),
+      height: round1(r.height),
+    }));
+}
+
+// Transpone una plancha (intercambia ejes X↔Y, ancho↔alto). Se usa para el
+// empaque por FILAS: se resuelve como columnas en el espacio transpuesto y se
+// devuelve al espacio original.
+function transpose(sheet: PackedSheet): PackedSheet {
+  return {
+    pieces: sheet.pieces.map((p) => ({
+      x: p.y,
+      y: p.x,
+      width: p.height,
+      height: p.width,
+      label: p.label,
+    })),
+    wasteRects: sheet.wasteRects.map((w) => ({
+      x: w.y,
+      y: w.x,
+      width: w.height,
+      height: w.width,
+    })),
+  };
+}
+
+// Empaque por columnas para un orden de piezas ya dado.
+function packColumns(
+  pieces: InputPiece[],
+  W: number,
+  H: number,
+  allowRotate: boolean,
+): PackedSheet[] {
+  const sheets: WorkSheet[] = [];
+  for (const piece of pieces) {
+    placePiece(sheets, piece.width, piece.height, piece.label, W, H, allowRotate);
+  }
+  return sheets.map((s) => ({
+    pieces: s.placed,
+    wasteRects: buildWaste(s, W, H),
+  }));
+}
+
+// Empaque según eje: 'col' = franjas verticales, 'row' = franjas horizontales.
+function packAxis(
+  pieces: InputPiece[],
+  W: number,
+  H: number,
+  axis: Axis,
+  allowRotate: boolean,
+): PackedSheet[] {
+  if (axis === 'col') return packColumns(pieces, W, H, allowRotate);
+  // FILAS: resolver transpuesto y volver.
+  const swapped = pieces.map((p) => ({
+    width: p.height,
+    height: p.width,
+    label: p.label,
+  }));
+  return packColumns(swapped, H, W, allowRotate).map(transpose);
+}
+
+function solutionScore(
+  sheets: PackedSheet[],
+  W: number,
+  H: number,
+): number {
+  // Menor es mejor: penaliza # planchas primero, luego desperdicio total.
+  const used = sheets.reduce(
+    (sum, s) => sum + s.pieces.reduce((a, p) => a + p.width * p.height, 0),
     0,
   );
-  const totalSheetArea = sheets.length * sheetArea;
-  const waste = totalSheetArea - totalUsed;
+  const waste = sheets.length * W * H - used;
   return sheets.length * 1e9 + waste;
 }
 
@@ -293,49 +290,46 @@ export function guillotinePack(
 ): PackedSheet[] {
   if (pieces.length === 0) return [];
 
-  // Ordenamientos candidatos: más variantes = mejor calidad, costo trivial
-  // con 8-50 piezas. Cada orden es estable y determinístico.
-  const orderings: Array<{ name: string; cmp: (a: InputPiece, b: InputPiece) => number }> = [
-    { name: 'area-desc', cmp: (a, b) => b.width * b.height - a.width * a.height },
-    { name: 'height-desc', cmp: (a, b) => b.height - a.height },
+  const orderings: Array<{
+    name: string;
+    cmp: (a: InputPiece, b: InputPiece) => number;
+  }> = [
+    // width-desc agrupa columnas de mismo ancho (clave para layouts prolijos).
     { name: 'width-desc', cmp: (a, b) => b.width - a.width },
-    { name: 'longSide-desc', cmp: (a, b) => Math.max(b.width, b.height) - Math.max(a.width, a.height) },
-    { name: 'perimeter-desc', cmp: (a, b) => (b.width + b.height) - (a.width + a.height) },
+    { name: 'height-desc', cmp: (a, b) => b.height - a.height },
+    { name: 'area-desc', cmp: (a, b) => b.width * b.height - a.width * a.height },
+    {
+      name: 'longSide-desc',
+      cmp: (a, b) => Math.max(b.width, b.height) - Math.max(a.width, a.height),
+    },
+    {
+      name: 'maxDim-then-width',
+      cmp: (a, b) =>
+        Math.max(b.width, b.height) - Math.max(a.width, a.height) ||
+        b.width - a.width,
+    },
   ];
-  const heuristics: Heuristic[] = ['BSSF', 'BLSF', 'BAF'];
-  const splitRules: SplitRule[] = ['SAS', 'LAS'];
+  const axes: Axis[] = ['col', 'row'];
+  const rotateOpts = [true, false];
 
-  let bestSheets: Sheet[] | null = null;
+  let best: PackedSheet[] | null = null;
   let bestScore = Infinity;
 
   for (const ord of orderings) {
     const sorted = [...pieces].sort(ord.cmp);
-    for (const h of heuristics) {
-      for (const r of splitRules) {
-        const sheets = runPack(sorted, sheetW, sheetH, h, r);
-        const score = scoreSolution(sheets, sheetW, sheetH);
+    for (const axis of axes) {
+      for (const rot of rotateOpts) {
+        const sheets = packAxis(sorted, sheetW, sheetH, axis, rot);
+        const score = solutionScore(sheets, sheetW, sheetH);
         if (score < bestScore) {
           bestScore = score;
-          bestSheets = sheets;
+          best = sheets;
         }
       }
     }
   }
 
-  const result = bestSheets ?? [];
-  return result
-    .filter((s) => s.placed.length > 0)
-    .map((s) => ({
-      pieces: s.placed,
-      wasteRects: s.freeRects
-        .filter((f) => f.w > 1 && f.h > 1)
-        .map((f) => ({
-          x: round1(f.x),
-          y: round1(f.y),
-          width: round1(f.w),
-          height: round1(f.h),
-        })),
-    }));
+  return (best ?? []).filter((s) => s.pieces.length > 0);
 }
 
 // Versión simplificada que solo retorna el número de planchas necesarias.
