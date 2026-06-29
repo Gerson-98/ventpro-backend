@@ -66,7 +66,7 @@ export class WindowSeriesController {
     @Param('categoryId', ParseIntPipe) categoryId: number,
     @Body() body: { sort_order?: number },
   ) {
-    return this.windowSeriesService.linkCategory(seriesId, categoryId, body.sort_order ?? 0);
+    return this.windowSeriesService.linkCategory(seriesId, categoryId, body?.sort_order ?? 0);
   }
 
   @Delete(':seriesId/categories/:categoryId')
