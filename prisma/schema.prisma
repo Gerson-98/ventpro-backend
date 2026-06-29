@@ -192,6 +192,48 @@ model WindowTypeOption {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SERIES Y CATEGORÍAS DE VENTANAS
+// ─────────────────────────────────────────────────────────────────────────────
+
+model WindowSeries {
+  id          Int              @id @default(autoincrement())
+  name        String           @unique
+  displayName String?
+  sort_order  Int              @default(0)
+  active      Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+  windowTypes WindowType[]
+  categories  SeriesCategory[]
+
+  @@map("window_series")
+}
+
+model WindowCategory {
+  id          Int              @id @default(autoincrement())
+  name        String           @unique
+  displayName String?
+  sort_order  Int              @default(0)
+  active      Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+  windowTypes WindowType[]
+  seriesLinks SeriesCategory[]
+
+  @@map("window_categories")
+}
+
+model SeriesCategory {
+  id          Int            @id @default(autoincrement())
+  series_id   Int
+  category_id Int
+  sort_order  Int            @default(0)
+  series      WindowSeries   @relation(fields: [series_id], references: [id], onDelete: Cascade)
+  category    WindowCategory @relation(fields: [category_id], references: [id], onDelete: Cascade)
+
+  @@unique([series_id, category_id])
+  @@map("series_categories")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // TIPOS DE VENTANA Y SUS CONFIGURACIONES
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -200,6 +242,12 @@ model WindowType {
   name              String               @unique
   displayName       String?
   description       String?
+  // Clasificación por serie y categoría — nullable para retrocompatibilidad
+  // Los tipos sin clasificar (series_id = NULL) siguen funcionando normalmente
+  series_id         Int?
+  category_id       Int?
+  series            WindowSeries?        @relation(fields: [series_id], references: [id], onDelete: SetNull)
+  category          WindowCategory?      @relation(fields: [category_id], references: [id], onDelete: SetNull)
   windows           Window[]
   pvcLinks          WindowTypePvcColor[]
   calculation       WindowCalculation?

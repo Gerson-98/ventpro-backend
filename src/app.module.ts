@@ -31,6 +31,8 @@ import { WindowTypeOptionsModule } from './window-type-options/window-type-optio
 import { ChecklistsModule } from './checklists/checklists.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { AppSettingsModule } from './app-settings/app-settings.module';
+import { WindowSeriesModule } from './window-series/window-series.module';
+import { WindowCategoriesModule } from './window-categories/window-categories.module';
 
 @Module({
   imports: [
@@ -64,7 +66,9 @@ import { AppSettingsModule } from './app-settings/app-settings.module';
     WindowTypeOptionsModule,
     ChecklistsModule,
     DashboardModule,
-    AppSettingsModule, // ← nuevo
+    AppSettingsModule,
+    WindowSeriesModule,
+    WindowCategoriesModule,
   ],
   controllers: [AppController, UploadsController],
   providers: [

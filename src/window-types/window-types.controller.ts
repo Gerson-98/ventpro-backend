@@ -26,6 +26,8 @@ export class WindowTypesController {
       displayName?: string;
       description?: string;
       pvcColorIds?: number[];
+      series_id?: number | null;
+      category_id?: number | null;
     },
   ) {
     return this.windowTypesService.create(data);
@@ -37,22 +39,38 @@ export class WindowTypesController {
     return this.windowTypesService.findAll();
   }
 
+  // IMPORTANTE: declarada ANTES de /:id para que NestJS no interprete
+  // "modal-structure" como un parámetro numérico de id.
   @SkipThrottle()
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.windowTypesService.findOne(+id);
+  @Get('modal-structure')
+  getModalStructure() {
+    return this.windowTypesService.getModalStructure();
   }
 
+  // by-pvc también debe ir antes de /:id (ya estaba correctamente posicionada)
   @SkipThrottle()
   @Get('by-pvc/:colorId')
   findByPvc(@Param('colorId') colorId: string) {
     return this.windowTypesService.findByPvcColor(Number(colorId));
   }
 
+  @SkipThrottle()
+  @Get(':id')
+  findOne(@Param('id') id: string) {
+    return this.windowTypesService.findOne(+id);
+  }
+
   @Put(':id')
   update(
     @Param('id') id: string,
-    @Body() data: { name?: string; displayName?: string | null; description?: string },
+    @Body()
+    data: {
+      name?: string;
+      displayName?: string | null;
+      description?: string;
+      series_id?: number | null;
+      category_id?: number | null;
+    },
   ) {
     return this.windowTypesService.update(+id, data);
   }
@@ -61,7 +79,14 @@ export class WindowTypesController {
   @Patch(':id')
   patch(
     @Param('id') id: string,
-    @Body() data: { name?: string; displayName?: string | null; description?: string },
+    @Body()
+    data: {
+      name?: string;
+      displayName?: string | null;
+      description?: string;
+      series_id?: number | null;
+      category_id?: number | null;
+    },
   ) {
     return this.windowTypesService.update(+id, data);
   }
