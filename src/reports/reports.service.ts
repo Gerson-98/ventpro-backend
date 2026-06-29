@@ -143,6 +143,7 @@ export class ReportsService {
       const reglas = this.costCalculator.aplicarRuleOverrides(
         catalogEntry,
         options,
+        window.glassColor?.name,
       );
 
       const perfilMarcoFinal =
@@ -874,7 +875,7 @@ export class ReportsService {
       const catalogEntry = catalogMap.get(window.window_type_id);
       const options = (window.options as any) || {};
       const reglas = catalogEntry
-        ? this.costCalculator.aplicarRuleOverrides(catalogEntry, options)
+        ? this.costCalculator.aplicarRuleOverrides(catalogEntry, options, window.glassColor?.name)
         : null;
       const cantVidrios =
         reglas?.cant_vidrios ?? catalogEntry?.cant_vidrios ?? 1;
@@ -1001,6 +1002,7 @@ export class ReportsService {
       const reglasCut = this.costCalculator.aplicarRuleOverrides(
         catalogEntry,
         options,
+        window.glassColor?.name,
       );
 
       const perfilHojaFinal =

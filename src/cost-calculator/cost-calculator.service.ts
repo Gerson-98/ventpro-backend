@@ -77,6 +77,7 @@ export class CostCalculatorService {
   private catalogoCache = new Map<number, CacheEntry<any>>();
   private calcParamsCache = new Map<number, CacheEntry<any>>();
   private accessoryRulesCache = new Map<number, CacheEntry<any[]>>();
+  private glassColorNameCache = new Map<number, CacheEntry<string>>();
 
   private getFromCache<T>(
     cache: Map<number, CacheEntry<T>>,
@@ -105,6 +106,16 @@ export class CostCalculatorService {
     this.catalogoCache.clear();
     this.calcParamsCache.clear();
     this.accessoryRulesCache.clear();
+    this.glassColorNameCache.clear();
+  }
+
+  private async getGlassColorName(id?: number): Promise<string | undefined> {
+    if (!id) return undefined;
+    const cached = this.getFromCache(this.glassColorNameCache, id);
+    if (cached !== null) return cached;
+    const gc = await this.prisma.glassColor.findUnique({ where: { id }, select: { name: true } });
+    if (gc?.name) this.setInCache(this.glassColorNameCache, id, gc.name);
+    return gc?.name;
   }
 
   private async getPvcColor(colorId: number) {
@@ -221,6 +232,7 @@ export class CostCalculatorService {
 
     const catalogo = await this.getCatalogo(windowType.id);
     const calcParams = await this.getCalcParams(window_type_id);
+    const glassColorName = await this.getGlassColorName(input.glass_color_id);
 
     const { hojaAncho, hojaAlto, vidrioDescuento } = this.calcularMedidasHoja(
       width_cm,
@@ -240,7 +252,7 @@ export class CostCalculatorService {
     const detalle: MaterialCostLine[] = [];
 
     if (catalogo) {
-      const reglas = this.aplicarRuleOverrides(catalogo, options);
+      const reglas = this.aplicarRuleOverrides(catalogo, options, glassColorName);
 
       const perfilesOverride = await this.resolverPerfilesOverride(
         reglas,
@@ -497,6 +509,7 @@ export class CostCalculatorService {
       ruleOverrides?: any;
     },
     options: Record<string, string>,
+    glassColorName?: string,
   ): ResolvedRules {
     let regla_marco = catalogo.regla_marco;
     let regla_hoja = catalogo.regla_hoja;
@@ -532,6 +545,19 @@ export class CostCalculatorService {
       Record<string, any>
     >;
 
+    // Enriquecer opciones con __glass__ para permitir overrides condicionales
+    // según el tipo de vidrio seleccionado (DUELA vs cualquier otro).
+    // VIDRIO Y DUELA es ambiguo — no se inyecta ningún valor.
+    const enrichedOptions = { ...options };
+    if (glassColorName) {
+      const upper = glassColorName.toUpperCase();
+      if (upper.includes('DUELA') && upper !== 'VIDRIO Y DUELA') {
+        enrichedOptions['__glass__'] = 'DUELA';
+      } else if (upper !== 'VIDRIO Y DUELA') {
+        enrichedOptions['__glass__'] = 'VIDRIO';
+      }
+    }
+
     // Excluir los keys de mosquitero/refuerzo del procesamiento de ruleOverrides
     // para que no interfieran con la lógica de perfiles
     const SKIP_KEYS = new Set([
@@ -540,7 +566,7 @@ export class CostCalculatorService {
       'refuerzo_mosquitero',
     ]);
 
-    for (const [optionGroup, optionValue] of Object.entries(options)) {
+    for (const [optionGroup, optionValue] of Object.entries(enrichedOptions)) {
       if (SKIP_KEYS.has(optionGroup)) continue;
       const override = overrides[optionValue];
       if (!override) continue;
@@ -783,6 +809,8 @@ export class CostCalculatorService {
       const calcParams = await this.getCalcParams(window_type_id);
       if (!catalogo) continue;
 
+      const glassColorName = await this.getGlassColorName(win.glass_color_id);
+
       const { hojaAncho, hojaAlto, vidrioDescuento } = this.calcularMedidasHoja(
         width_cm,
         height_cm,
@@ -796,7 +824,7 @@ export class CostCalculatorService {
       const conRefuerzoHojas = this.tieneRefuerzoHojas(options);
       const conRefuerzoMosquitero = this.tieneRefuerzoMosquitero(options);
 
-      const reglas = this.aplicarRuleOverrides(catalogo, options);
+      const reglas = this.aplicarRuleOverrides(catalogo, options, glassColorName);
       const perfilesOverride = await this.resolverPerfilesOverride(
         reglas,
         catalogo,
@@ -1042,7 +1070,7 @@ export class CostCalculatorService {
             duelaInitialized = true;
           }
         }
-        const reglas = this.aplicarRuleOverrides(catalogo, options);
+        const reglas = this.aplicarRuleOverrides(catalogo, options, glassColor.name);
         const cantVidrios = reglas.cant_vidrios ?? catalogo.cant_vidrios ?? 1;
         for (let q = 0; q < cantVidrios * quantity; q++) {
           const stripsNeeded = Math.ceil(vidrioAlto / 15);
@@ -1054,7 +1082,7 @@ export class CostCalculatorService {
       // ── VIDRIO Y DUELA: se omite igual que en processWindowsToReport ──
       if (glassNameUpper === 'VIDRIO Y DUELA') continue;
 
-      const reglas = this.aplicarRuleOverrides(catalogo, options);
+      const reglas = this.aplicarRuleOverrides(catalogo, options, glassColor.name);
       const cantVidrios = reglas.cant_vidrios ?? catalogo.cant_vidrios;
       if (!cantVidrios || cantVidrios <= 0) continue;
 
