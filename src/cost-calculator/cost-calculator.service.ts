@@ -753,13 +753,16 @@ export class CostCalculatorService {
           areaM2: 0,
         };
         const factor = rule.formula_factor ?? 1;
-        if (rule.formula_type === 'PER_BARRA') {
-          cantidad = Math.ceil(metrics.barras * factor);
-        } else if (rule.formula_type === 'PER_M2') {
-          cantidad = Math.ceil(metrics.areaM2 * factor);
-        } else {
-          cantidad = rule.quantity * quantity;
-        }
+        // Cantidad física necesaria (metros lineales o m², según el tipo).
+        const necesario =
+          rule.formula_type === 'PER_M2'
+            ? metrics.areaM2 * factor
+            : metrics.barras * factor;
+        // Convertir a unidades de venta usando coverage_per_unit del material
+        // (ej: 1 rollo cubre 100m → necesario/100 = cuántos rollos comprar).
+        // Sin coverage_per_unit configurado, 1 unidad de fórmula = 1 unidad de venta.
+        const coverage = rule.material.coverage_per_unit ?? 1;
+        cantidad = Math.ceil(necesario / coverage);
       } else {
         cantidad = rule.quantity * quantity;
       }

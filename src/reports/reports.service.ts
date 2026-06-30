@@ -259,17 +259,19 @@ export class ReportsService {
               continue;
           }
 
-          // ── Cantidad por fórmula (barras/m2) o fija ──────────────────────
+          // ── Cantidad por fórmula (barras/m2, convertido a unidades de venta) o fija ──
           let cantidadAcumular: number;
           if (rule.formula_type && rule.formula_slot) {
             const metrics = slotMetricsForWindow[
               rule.formula_slot.toLowerCase()
             ] ?? { barras: 0, areaM2: 0 };
             const factor = rule.formula_factor ?? 1;
-            cantidadAcumular =
+            const necesario =
               rule.formula_type === 'PER_M2'
-                ? Math.ceil(metrics.areaM2 * factor)
-                : Math.ceil(metrics.barras * factor);
+                ? metrics.areaM2 * factor
+                : metrics.barras * factor;
+            const coverage = rule.material.coverage_per_unit ?? 1;
+            cantidadAcumular = Math.ceil(necesario / coverage);
           } else {
             cantidadAcumular = rule.quantity * windowQuantity;
           }

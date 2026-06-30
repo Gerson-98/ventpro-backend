@@ -30,4 +30,9 @@ export class CreateMaterialDto {
   @IsOptional()
   @IsString()
   unit?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  coverage_per_unit?: number | null;
 }

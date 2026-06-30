@@ -99,6 +99,12 @@ model Material {
   price_color Float?
   unit        String?
 
+  // Cuántos metros (o m², según la fórmula que lo use) cubre 1 unidad de venta
+  // de este material. Ej: un rollo de 100m de empaque → coverage_per_unit=100.
+  // null/vacío = sin conversión (1 unidad de fórmula = 1 unidad de venta).
+  // Solo aplica a AccessoryRules con formula_type definido.
+  coverage_per_unit Float?
+
   catalogoMarcos      CatalogoPerfiles[] @relation("marco_relation")
   catalogoHojas       CatalogoPerfiles[] @relation("hoja_relation")
   catalogoMosquiteros CatalogoPerfiles[] @relation("mosquitero_relation")
