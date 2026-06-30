@@ -1,4 +1,11 @@
-import { IsInt, IsOptional, IsString, Min, IsNotEmpty } from 'class-validator';
+import {
+  IsInt,
+  IsOptional,
+  IsString,
+  IsNumber,
+  Min,
+  IsNotEmpty,
+} from 'class-validator';
 
 export class CreateAccessoryRuleDto {
   @IsInt()
@@ -20,4 +27,19 @@ export class CreateAccessoryRuleDto {
   @IsOptional()
   @IsString()
   option_key?: string | null;
+
+  // ── Cantidad por fórmula (ignora "quantity" si está definido) ─────────────
+  // 'PER_BARRA' | 'PER_M2'
+  @IsOptional()
+  @IsString()
+  formula_type?: string | null;
+
+  // 'marco' | 'hoja' | 'mosquitero' | 'batiente' | 'tapajamba'
+  @IsOptional()
+  @IsString()
+  formula_slot?: string | null;
+
+  @IsOptional()
+  @IsNumber()
+  formula_factor?: number | null;
 }

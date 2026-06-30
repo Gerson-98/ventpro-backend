@@ -173,6 +173,17 @@ model OptionValue {
   group_id   Int
   group      OptionGroup @relation(fields: [group_id], references: [id], onDelete: Cascade)
 
+  // ── Visibilidad condicional ────────────────────────────────────────────────
+  // Si se configuran, este valor solo aparece en el cotizador cuando el grupo
+  // depends_on_group_key tiene seleccionado el valor depends_on_value_key.
+  // Ej: valores de "tipo_cierre" que solo aplican cuando tipo_apertura=afuera.
+  depends_on_group_key String?
+  depends_on_value_key String?
+
+  // Si no es null, seleccionar este valor fuerza el estado del mosquitero
+  // (true=siempre con, false=siempre sin) y oculta el toggle libre en el cotizador.
+  forces_mosquitero Boolean?
+
   @@unique([group_id, key])
   @@map("option_values")
 }
@@ -322,6 +333,17 @@ model AccessoryRule {
   quantity       Int
   option_group   String?
   option_key     String?
+
+  // ── Cantidad calculada por fórmula (en vez de fija) ────────────────────────
+  // Si formula_type está definido, "quantity" se ignora y la cantidad se
+  // calcula a partir de las barras o el área (m²) ya computados para el slot
+  // de perfil indicado en formula_slot ('marco'|'hoja'|'mosquitero'|'batiente'|'tapajamba').
+  // PER_BARRA: cantidad = ceil(barras_slot * formula_factor)
+  // PER_M2:    cantidad = ceil(areaM2_slot * formula_factor)
+  formula_type   String?
+  formula_slot   String?
+  formula_factor Float?
+
   window_type_id Int
   material_id    Int
   windowType     WindowType @relation(fields: [window_type_id], references: [id], onDelete: Cascade)

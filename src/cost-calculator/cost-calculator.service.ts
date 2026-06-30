@@ -250,6 +250,9 @@ export class CostCalculatorService {
     const conRefuerzoMosquitero = this.tieneRefuerzoMosquitero(options);
 
     const detalle: MaterialCostLine[] = [];
+    // Barras/área por slot de perfil — usado por accesorios con cantidad por fórmula
+    // (ej: "1 silicón por cada 0.5 barras de marco", "5m empaque por barra de mosquitero").
+    const slotMetrics: Record<string, { barras: number; areaM2: number }> = {};
 
     if (catalogo) {
       const reglas = this.aplicarRuleOverrides(catalogo, options, glassColorName);
@@ -333,6 +336,11 @@ export class CostCalculatorService {
           unidad: 'barras',
         });
 
+        slotMetrics[label.toLowerCase()] = {
+          barras: barrasEnteras,
+          areaM2: (ancho * alto * quantity) / 10000,
+        };
+
         // ── REFUERZO HOJAS: misma cantidad de barras que la hoja ────────────
         if (label === 'HOJA' && conRefuerzoHojas && catalogo.refuerzoHoja) {
           const precioRef = esBlanco
@@ -412,6 +420,7 @@ export class CostCalculatorService {
       quantity,
       detalle,
       conMosquitero,
+      slotMetrics,
     );
 
     const costo_perfiles = detalle
@@ -705,6 +714,7 @@ export class CostCalculatorService {
     quantity: number,
     detalle: MaterialCostLine[],
     conMosquitero: boolean,
+    slotMetrics: Record<string, { barras: number; areaM2: number }> = {},
   ): Promise<void> {
     const rules = await this.getAccessoryRules(window_type_id);
 
@@ -732,7 +742,28 @@ export class CostCalculatorService {
       const precio = esBlanco
         ? (rule.material.price_white ?? 0)
         : (rule.material.price_color ?? rule.material.price_white ?? 0);
-      const cantidad = rule.quantity * quantity;
+
+      // ── Cantidad por fórmula (barras/m2 ya calculados) o fija ────────────────
+      // slotMetrics ya incorpora "quantity" (se calculó sobre todas las barras
+      // de la ventana), así que no se vuelve a multiplicar aquí.
+      let cantidad: number;
+      if (rule.formula_type && rule.formula_slot) {
+        const metrics = slotMetrics[rule.formula_slot.toLowerCase()] ?? {
+          barras: 0,
+          areaM2: 0,
+        };
+        const factor = rule.formula_factor ?? 1;
+        if (rule.formula_type === 'PER_BARRA') {
+          cantidad = Math.ceil(metrics.barras * factor);
+        } else if (rule.formula_type === 'PER_M2') {
+          cantidad = Math.ceil(metrics.areaM2 * factor);
+        } else {
+          cantidad = rule.quantity * quantity;
+        }
+      } else {
+        cantidad = rule.quantity * quantity;
+      }
+      if (cantidad <= 0) continue;
 
       detalle.push({
         material_id: rule.material.id,

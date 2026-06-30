@@ -217,6 +217,28 @@ export class ReportsService {
         },
       ];
 
+      // 0. Barras/área aproximadas por slot — solo para evaluar accesorios con
+      //    fórmula (PER_BARRA/PER_M2). Es una aproximación por ventana (sin
+      //    bin-packing global), suficiente para cantidades de empaque/silicón/malla.
+      const slotMetricsForWindow: Record<
+        string,
+        { barras: number; areaM2: number }
+      > = {};
+      for (const profile of dynamicProfiles) {
+        if (!profile.incluir || !profile.material || !profile.rule) continue;
+        const cuts = this.getCutsWithDimension(
+          profile.rule,
+          profile.ancho,
+          profile.alto,
+        );
+        const totalLength =
+          cuts.reduce((s, c) => s + c.length, 0) * windowQuantity;
+        slotMetricsForWindow[profile.type.toLowerCase()] = {
+          barras: Math.ceil(totalLength / BAR_LENGTH_REPORT),
+          areaM2: (profile.ancho * profile.alto * windowQuantity) / 10000,
+        };
+      }
+
       // 1. ACCESORIOS
       if (window.window_type_id) {
         const rules = rulesByWindowType.get(window.window_type_id) || [];
@@ -237,6 +259,22 @@ export class ReportsService {
               continue;
           }
 
+          // ── Cantidad por fórmula (barras/m2) o fija ──────────────────────
+          let cantidadAcumular: number;
+          if (rule.formula_type && rule.formula_slot) {
+            const metrics = slotMetricsForWindow[
+              rule.formula_slot.toLowerCase()
+            ] ?? { barras: 0, areaM2: 0 };
+            const factor = rule.formula_factor ?? 1;
+            cantidadAcumular =
+              rule.formula_type === 'PER_M2'
+                ? Math.ceil(metrics.areaM2 * factor)
+                : Math.ceil(metrics.barras * factor);
+          } else {
+            cantidadAcumular = rule.quantity * windowQuantity;
+          }
+          if (cantidadAcumular <= 0) continue;
+
           const key = `${rule.material.name}|${window.pvcColor.name}`;
           const existing = accessoriesReportMap.get(key) || {
             material: rule.material,
@@ -246,7 +284,7 @@ export class ReportsService {
           };
           if (rule.material.name === 'LANCETA')
             existing.note = `Cortar a ${window.width_cm} cm`;
-          existing.quantity += rule.quantity * windowQuantity;
+          existing.quantity += cantidadAcumular;
           accessoriesReportMap.set(key, existing);
         }
       }
