@@ -262,6 +262,9 @@ model WindowType {
   // Si es false, el cotizador oculta DUELA y VIDRIO Y DUELA del selector de
   // vidrio para este tipo — usado cuando el perfil batiente solo admite vidrio.
   allows_duela      Boolean              @default(true)
+  // Si es true, el cotizador muestra un botón opcional para adjuntar una
+  // imagen de referencia del diseño, independiente de cualquier opción elegida.
+  allows_reference_image Boolean         @default(false)
   // Clasificación por serie y categoría — nullable para retrocompatibilidad
   // Los tipos sin clasificar (series_id = NULL) siguen funcionando normalmente
   series_id         Int?

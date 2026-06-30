@@ -29,6 +29,7 @@ export class WindowTypesController {
       series_id?: number | null;
       category_id?: number | null;
       allows_duela?: boolean;
+      allows_reference_image?: boolean;
     },
   ) {
     return this.windowTypesService.create(data);
@@ -72,6 +73,7 @@ export class WindowTypesController {
       series_id?: number | null;
       category_id?: number | null;
       allows_duela?: boolean;
+      allows_reference_image?: boolean;
     },
   ) {
     return this.windowTypesService.update(+id, data);
@@ -89,6 +91,7 @@ export class WindowTypesController {
       series_id?: number | null;
       category_id?: number | null;
       allows_duela?: boolean;
+      allows_reference_image?: boolean;
     },
   ) {
     return this.windowTypesService.update(+id, data);
