@@ -28,6 +28,7 @@ export class WindowTypesController {
       pvcColorIds?: number[];
       series_id?: number | null;
       category_id?: number | null;
+      allows_duela?: boolean;
     },
   ) {
     return this.windowTypesService.create(data);
@@ -70,6 +71,7 @@ export class WindowTypesController {
       description?: string;
       series_id?: number | null;
       category_id?: number | null;
+      allows_duela?: boolean;
     },
   ) {
     return this.windowTypesService.update(+id, data);
@@ -86,6 +88,7 @@ export class WindowTypesController {
       description?: string;
       series_id?: number | null;
       category_id?: number | null;
+      allows_duela?: boolean;
     },
   ) {
     return this.windowTypesService.update(+id, data);

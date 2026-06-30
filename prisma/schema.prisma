@@ -259,6 +259,9 @@ model WindowType {
   name              String               @unique
   displayName       String?
   description       String?
+  // Si es false, el cotizador oculta DUELA y VIDRIO Y DUELA del selector de
+  // vidrio para este tipo — usado cuando el perfil batiente solo admite vidrio.
+  allows_duela      Boolean              @default(true)
   // Clasificación por serie y categoría — nullable para retrocompatibilidad
   // Los tipos sin clasificar (series_id = NULL) siguen funcionando normalmente
   series_id         Int?
