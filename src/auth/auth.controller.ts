@@ -34,7 +34,9 @@ export class AuthController {
    * POST /auth/login
    * Devuelve access_token en body + refresh_token en httpOnly cookie.
    */
-  @Throttle({ login: { ttl: 60000, limit: 5 } })
+  // Sobreescribe el límite del throttler 'global' SOLO para esta ruta — no
+  // crea un throttler nuevo que aplicaría a todo el sitio (ver app.module.ts).
+  @Throttle({ global: { ttl: 60000, limit: 5 } })
   @Post('login')
   async login(
     @Body() loginDto: LoginDto,

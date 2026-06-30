@@ -39,11 +39,19 @@ import { WindowCategoriesModule } from './window-categories/window-categories.mo
     // En Render varios usuarios pueden compartir IP de salida. El throttler
     // global cuenta por IP, así que un equipo de 3-5 vendedores trabajando
     // sobre cotizaciones grandes (muchas llamadas a /cost-calculator/window)
-    // se acerca al límite con 1000 req/min. Subimos a 5000 y mantenemos
-    // 'login' estricto. Los GETs de catálogos están marcados @SkipThrottle.
+    // se acerca al límite con 1000 req/min. Subimos a 5000.
+    //
+    // IMPORTANTE: un solo throttler nombrado. Con @nestjs/throttler, CADA
+    // throttler definido en forRoot() se aplica a TODAS las rutas por
+    // defecto, salvo que la ruta lo sobreescriba explícitamente. Antes
+    // existía un throttler 'login' (limit:5) separado del 'global' — al no
+    // estar restringido solo al endpoint de login, ese límite de 5/min se
+    // aplicaba a TODO el sitio (cotizador incluido), causando 429 reales en
+    // producción tras solo 5 requests por minuto. El login ahora sobreescribe
+    // el límite del MISMO throttler 'global' únicamente en su propia ruta
+    // (ver @Throttle({ global: {...} }) en auth.controller.ts).
     ThrottlerModule.forRoot([
       { name: 'global', ttl: 60000, limit: 5000 },
-      { name: 'login', ttl: 60000, limit: 5 },
     ]),
     OrdersModule,
     WindowsModule,
