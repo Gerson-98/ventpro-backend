@@ -1123,7 +1123,9 @@ export class ReportsService {
         'HOJA PROYECTABLE',
         'MARCO CORREDIZO S80 4,5 CM',
         'MARCO CORREDIZO S80 5 CM',
-        'MARCO FIJO 60',
+        'MARCO FIJO S60',
+        'MARCO FIJO S80',
+        'BATIENTE PARA FIJO',
         // ── Refuerzos también entran al plan de corte ────────────────────────
         'REFUERZO HOJA 5,5 CM',
         'REFUERZO HOJA 6,6 CM',
