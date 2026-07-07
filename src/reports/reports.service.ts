@@ -11,6 +11,9 @@ type AccessoryRuleWithMaterial = AccessoryRule & { material: Material };
 // ── Movido al scope de archivo para que todos los métodos lo reconozcan ──────
 type LabeledCut = { length: number; windowLabel: string };
 
+// Desperdicio de sierra por corte a 45° (inglete) — aplica a todos los perfiles
+const KERF_CM = 2;
+
 interface MachineSerie {
   serieIndex: number;
   cuts: { length: number; windowLabel: string }[];
@@ -1125,7 +1128,6 @@ export class ReportsService {
         'MARCO CORREDIZO S80 5 CM',
         'MARCO FIJO S60',
         'MARCO FIJO S80',
-        'BATIENTE PARA FIJO',
         // ── Refuerzos también entran al plan de corte ────────────────────────
         'REFUERZO HOJA 5,5 CM',
         'REFUERZO HOJA 6,6 CM',
@@ -1328,17 +1330,18 @@ export class ReportsService {
     const sorted = [...cuts].sort((a, b) => b.length - a.length);
     const bins: { cuts: LabeledCut[]; remaining: number }[] = [];
     for (const cut of sorted) {
+      const effective = cut.length + KERF_CM;
       let placed = false;
       for (const bin of bins) {
-        if (cut.length <= bin.remaining) {
+        if (effective <= bin.remaining) {
           bin.cuts.push(cut);
-          bin.remaining -= cut.length;
+          bin.remaining -= effective;
           placed = true;
           break;
         }
       }
       if (!placed)
-        bins.push({ cuts: [cut], remaining: barLength - cut.length });
+        bins.push({ cuts: [cut], remaining: barLength - effective });
     }
     return bins.map((b) => b.cuts);
   }
@@ -1408,7 +1411,7 @@ export class ReportsService {
           serieIndex: idx + 1,
           cuts: [...bin].sort((a, b) => b.length - a.length),
           totalUsed: Number(totalUsed.toFixed(1)),
-          waste: Number((barLength - totalUsed).toFixed(1)),
+          waste: Number((barLength - totalUsed - bin.length * KERF_CM).toFixed(1)),
           efficiency: Number(((totalUsed / barLength) * 100).toFixed(2)),
         };
       });
@@ -1492,7 +1495,7 @@ export class ReportsService {
             windowLabel: c.windowLabel,
           })),
           totalUsed: Number(totalUsed.toFixed(1)),
-          waste: Number((barLength - totalUsed).toFixed(1)),
+          waste: Number((barLength - totalUsed - bar.length * KERF_CM).toFixed(1)),
           efficiency: Number(((totalUsed / barLength) * 100).toFixed(2)),
         };
       }),
