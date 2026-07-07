@@ -83,4 +83,13 @@ export class OrdersController {
   ) {
     return this.ordersService.updateStatus(id, updateOrderStatusDto, req.user);
   }
+
+  @Patch(':id/marco-size')
+  swapMarcoSize(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { marcoSize: '4.5' | '5.0' },
+    @Request() req,
+  ) {
+    return this.ordersService.swapMarcoSize(id, body.marcoSize, req.user);
+  }
 }

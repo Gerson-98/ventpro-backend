@@ -12,6 +12,7 @@ import {
   UpdateOrderStatusDto,
 } from './dto/update-order.dto';
 import { OrderStatus, QuotationStatus } from '@prisma/client';
+import { CostCalculatorService } from '../cost-calculator/cost-calculator.service';
 
 interface AuthUser {
   id: number;
@@ -21,7 +22,10 @@ interface AuthUser {
 
 @Injectable()
 export class OrdersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private costCalculator: CostCalculatorService,
+  ) {}
 
   // ─── Helpers ─────────────────────────────────────────────────────────────
   private isAdmin(user: AuthUser): boolean {
@@ -358,6 +362,86 @@ export class OrdersService {
         installationEndDate: endDate,
       },
     });
+  }
+
+  // ─── swapMarcoSize ────────────────────────────────────────────────────────
+  // Intercambia el window_type_id de cada ventana corrediza entre su variante
+  // "MARCO 45 CM" y "MARCO 5 CM", y recalcula únicamente las medidas de hoja
+  // (hojaAncho, hojaAlto, vidrioAncho, vidrioAlto). El precio no se toca.
+  async swapMarcoSize(
+    orderId: number,
+    marcoSize: '4.5' | '5.0',
+    user: AuthUser,
+  ): Promise<{ updated: number }> {
+    await this.assertOwnership(orderId, user);
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      include: {
+        windows: {
+          include: {
+            windowType: { include: { calculation: true } },
+          },
+        },
+      },
+    });
+    if (!order) throw new NotFoundException(`Pedido #${orderId} no encontrado`);
+
+    const windowUpdates: Promise<any>[] = [];
+
+    for (const win of order.windows) {
+      const typeName: string = win.windowType?.name ?? '';
+      const hasMarco45 = typeName.includes('MARCO 45 CM');
+      const hasMarco5 = typeName.includes('MARCO 5 CM');
+
+      // Ventanas sin variante de marco (abatibles, fijos, etc.) → ignorar
+      if (!hasMarco45 && !hasMarco5) continue;
+
+      // Ya está en el tamaño solicitado → ignorar
+      if (marcoSize === '4.5' && hasMarco45) continue;
+      if (marcoSize === '5.0' && hasMarco5) continue;
+
+      // Nombre del tipo destino
+      const targetName =
+        marcoSize === '5.0'
+          ? typeName.replace('MARCO 45 CM', 'MARCO 5 CM')
+          : typeName.replace('MARCO 5 CM', 'MARCO 45 CM');
+
+      const targetType = await this.prisma.windowType.findFirst({
+        where: { name: targetName },
+        include: { calculation: true },
+      });
+
+      // No existe equivalente en BD → saltar silenciosamente
+      if (!targetType) continue;
+
+      const options = (win.options as Record<string, string>) ?? {};
+      const { hojaAncho, hojaAlto, vidrioDescuento } =
+        this.costCalculator.calcularMedidasHoja(
+          Number(win.width_cm),
+          Number(win.height_cm),
+          targetType.calculation,
+          options,
+        );
+      const vidrioAncho = Number((hojaAncho - vidrioDescuento).toFixed(2));
+      const vidrioAlto = Number((hojaAlto - vidrioDescuento).toFixed(2));
+
+      windowUpdates.push(
+        this.prisma.window.update({
+          where: { id: win.id },
+          data: {
+            window_type_id: targetType.id,
+            hojaAncho,
+            hojaAlto,
+            vidrioAncho,
+            vidrioAlto,
+          },
+        }),
+      );
+    }
+
+    await Promise.all(windowUpdates);
+    return { updated: windowUpdates.length };
   }
 
   // ─── updateStatus ─────────────────────────────────────────────────────────
