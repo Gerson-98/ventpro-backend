@@ -1007,9 +1007,23 @@ export class ReportsService {
       string,
       { color: string; cuts: LabeledCut[] }
     >();
-    const combinableCutList = new Map<
+    // Corredizas: se cortan en la máquina en "series" de barras idénticas
+    // (2 hojas + 1 mosquitero por pasada, o 2 hojas sin mosquitero). Se guarda
+    // por bucket (color + perfil hoja + perfil mosquitero) la lista de ventanas
+    // con su patrón de una hoja (unit) y cuántas hojas/mosquiteros necesita.
+    const machineCutList = new Map<
       string,
-      { color: string; hojaCuts: LabeledCut[]; mosquiteroCuts: LabeledCut[] }
+      {
+        color: string;
+        hojaProfileName: string;
+        mosqProfileName: string | null;
+        windows: {
+          label: string;
+          unit: LabeledCut[];
+          nHoja: number;
+          nMosq: number;
+        }[];
+      }
     >();
 
     for (let wi = 0; wi < enrichedWindows.length; wi++) {
@@ -1023,13 +1037,9 @@ export class ReportsService {
       const options = (window.options as Record<string, string>) || {};
 
       // ── Mosquitero y refuerzos ───────────────────────────────────────────
-      const conMosquitero = this.costCalculator.tieneMosquitero(
-        options,
-        catalogEntry,
-      );
       // Para el plan de corte, requerir 'con_mosquitero' explícito.
       // tieneMosquitero() retorna true cuando la key está ausente (ventanas sin
-      // la opción guardada), lo que produciría duplicación de piezas de HOJA.
+      // la opción guardada), lo que metía cedazo a ventanas que no lo llevan.
       const conMosquiteroCut =
         catalogEntry.perfilMosquitero != null &&
         options['mosquitero'] === 'con_mosquitero';
@@ -1086,7 +1096,10 @@ export class ReportsService {
           rule: reglasCut.regla_mosquitero,
           ancho: hojaAncho,
           alto: hojaAlto,
-          incluir: conMosquitero,
+          // Solo incluir cedazo cuando el mosquitero está marcado explícitamente.
+          // (tieneMosquitero() da true si la opción no existe → metía cedazo a
+          //  ventanas sin mosquitero como la puerta 4H o la abatible).
+          incluir: conMosquiteroCut,
         },
         {
           type: 'BATIENTE',
@@ -1134,10 +1147,100 @@ export class ReportsService {
         'REFUERZO CEDAZO',
       ]);
 
+      const isSliding = this.isSlidingWindowType(window.windowType.name);
+
       for (const profile of profiles) {
         if (!profile.incluir || !profile.material || !profile.rule) continue;
         if (!CUT_PROFILES_WHITELIST.has(profile.material.name)) continue;
 
+        // ── Corredizas: HOJA + MOSQUITERO → serie de máquina ─────────────────
+        //   La máquina corta barras idénticas al mismo tiempo: 2 hojas + 1
+        //   mosquitero, o 2 hojas sin mosquitero. Se resuelve todo en la
+        //   iteración de HOJA; la de MOSQUITERO se omite para no duplicar.
+        if (isSliding && profile.type === 'MOSQUITERO') continue;
+
+        if (isSliding && profile.type === 'HOJA') {
+          const hojaCutsDim = this.getCutsWithDimension(
+            profile.rule,
+            profile.ancho,
+            profile.alto,
+          );
+          // Cada hoja (y cada mosquitero) = 2 anchos + 2 altos = 4 piezas.
+          if (hojaCutsDim.length > 0 && hojaCutsDim.length % 4 === 0) {
+            const a = Number(profile.ancho.toFixed(1));
+            const h = Number(profile.alto.toFixed(1));
+            const baseLabel = `V${wi + 1}`;
+            const dims = `${(window.width_cm / 100).toFixed(2)}x${(window.height_cm / 100).toFixed(2)}m`;
+            const unit: LabeledCut[] = [
+              { length: a, windowLabel: `${baseLabel} A - ${dims}` },
+              { length: a, windowLabel: `${baseLabel} A - ${dims}` },
+              { length: h, windowLabel: `${baseLabel} H - ${dims}` },
+              { length: h, windowLabel: `${baseLabel} H - ${dims}` },
+            ];
+            const nHoja = hojaCutsDim.length / 4;
+
+            let nMosq = 0;
+            let mosqProfileName: string | null = null;
+            if (
+              conMosquiteroCut &&
+              perfilMosquiteroFinal &&
+              CUT_PROFILES_WHITELIST.has(perfilMosquiteroFinal.name) &&
+              reglasCut.regla_mosquitero
+            ) {
+              const mosqCutsDim = this.getCutsWithDimension(
+                reglasCut.regla_mosquitero,
+                hojaAncho,
+                hojaAlto,
+              );
+              if (mosqCutsDim.length > 0 && mosqCutsDim.length % 4 === 0) {
+                nMosq = mosqCutsDim.length / 4;
+                mosqProfileName = perfilMosquiteroFinal.name;
+              }
+            }
+
+            const key = `${window.pvcColor.name}|${profile.material.name}|${mosqProfileName ?? ''}`;
+            if (!machineCutList.has(key)) {
+              machineCutList.set(key, {
+                color: window.pvcColor.name,
+                hojaProfileName: profile.material.name,
+                mosqProfileName,
+                windows: [],
+              });
+            }
+            const mEntry = machineCutList.get(key)!;
+            for (let q = 0; q < windowQuantity; q++) {
+              mEntry.windows.push({ label: baseLabel, unit, nHoja, nMosq });
+            }
+
+            // Refuerzo de hojas / mosquitero: mismos cortes, se cortan aparte.
+            if (conRefuerzoHojas && catalogEntry.refuerzoHoja) {
+              const refKey = `${window.pvcColor.name}|${catalogEntry.refuerzoHoja.name}`;
+              if (!individualCutList.has(refKey))
+                individualCutList.set(refKey, {
+                  color: window.pvcColor.name,
+                  cuts: [],
+                });
+              const ref = individualCutList.get(refKey)!;
+              for (let q = 0; q < windowQuantity; q++)
+                for (let l = 0; l < nHoja; l++) ref.cuts.push(...unit);
+            }
+            if (conRefuerzoMosquitero && catalogEntry.refuerzoMosquitero && nMosq > 0) {
+              const refKey = `${window.pvcColor.name}|${catalogEntry.refuerzoMosquitero.name}`;
+              if (!individualCutList.has(refKey))
+                individualCutList.set(refKey, {
+                  color: window.pvcColor.name,
+                  cuts: [],
+                });
+              const ref = individualCutList.get(refKey)!;
+              for (let q = 0; q < windowQuantity; q++)
+                for (let s = 0; s < nMosq; s++) ref.cuts.push(...unit);
+            }
+            continue;
+          }
+          // Si no descompone limpio, cae al manejo individual de abajo.
+        }
+
+        // ── Perfiles individuales (MARCO, BATIENTE, TAPAJAMBA, no corredizas) ─
         const individualCutsWithDim = this.getCutsWithDimension(
           profile.rule,
           profile.ancho,
@@ -1154,43 +1257,12 @@ export class ReportsService {
           });
         }
 
-        const isSliding = this.isSlidingWindowType(window.windowType.name);
-        if (
-          isSliding &&
-          (profile.type === 'HOJA' || profile.type === 'MOSQUITERO') &&
-          conMosquiteroCut &&
-          catalogEntry.perfilHoja &&
-          catalogEntry.perfilMosquitero
-        ) {
-          const key = `${window.pvcColor.name}|${catalogEntry.perfilHoja.name}|${catalogEntry.perfilMosquitero.name}`;
-          if (!combinableCutList.has(key)) {
-            combinableCutList.set(key, {
-              color: window.pvcColor.name,
-              hojaCuts: [],
-              mosquiteroCuts: [],
-            });
-          }
-          const profileTag = profile.type === 'HOJA' ? '|HOJA' : '|CEDAZO';
-          const taggedCuts = allCuts.map((c) => ({
-            ...c,
-            windowLabel: c.windowLabel + profileTag,
-          }));
-          if (profile.type === 'HOJA') {
-            combinableCutList.get(key)!.hojaCuts.push(...taggedCuts);
-          } else {
-            combinableCutList.get(key)!.mosquiteroCuts.push(...taggedCuts);
-          }
-        } else {
-          const key = `${window.pvcColor.name}|${profile.material.name}`;
-          if (!individualCutList.has(key))
-            individualCutList.set(key, {
-              color: window.pvcColor.name,
-              cuts: [],
-            });
-          individualCutList.get(key)!.cuts.push(...allCuts);
-        }
+        const key = `${window.pvcColor.name}|${profile.material.name}`;
+        if (!individualCutList.has(key))
+          individualCutList.set(key, { color: window.pvcColor.name, cuts: [] });
+        individualCutList.get(key)!.cuts.push(...allCuts);
 
-        // ── Refuerzo Hojas: mismos cortes que HOJA ───────────────────────
+        // Refuerzos para casos no-corredizos (misma medida que el perfil base).
         if (
           profile.type === 'HOJA' &&
           conRefuerzoHojas &&
@@ -1198,14 +1270,9 @@ export class ReportsService {
         ) {
           const refKey = `${window.pvcColor.name}|${catalogEntry.refuerzoHoja.name}`;
           if (!individualCutList.has(refKey))
-            individualCutList.set(refKey, {
-              color: window.pvcColor.name,
-              cuts: [],
-            });
+            individualCutList.set(refKey, { color: window.pvcColor.name, cuts: [] });
           individualCutList.get(refKey)!.cuts.push(...allCuts);
         }
-
-        // ── Refuerzo Mosquitero: mismos cortes que MOSQUITERO ────────────
         if (
           profile.type === 'MOSQUITERO' &&
           conRefuerzoMosquitero &&
@@ -1213,10 +1280,7 @@ export class ReportsService {
         ) {
           const refKey = `${window.pvcColor.name}|${catalogEntry.refuerzoMosquitero.name}`;
           if (!individualCutList.has(refKey))
-            individualCutList.set(refKey, {
-              color: window.pvcColor.name,
-              cuts: [],
-            });
+            individualCutList.set(refKey, { color: window.pvcColor.name, cuts: [] });
           individualCutList.get(refKey)!.cuts.push(...allCuts);
         }
       }
@@ -1236,56 +1300,30 @@ export class ReportsService {
       );
     }
 
-    for (const [key, value] of combinableCutList.entries()) {
-      const [color, hojaProfileName, mosquiteroProfileName] = key.split('|');
-      const { combinedBins, hojaOnlyBins, mosquiteroOnlyBins, machineSeries } =
-        this.optimizeCombinedCutsLabeled(
-          value.hojaCuts,
-          value.mosquiteroCuts,
-          BAR_LENGTH,
-        );
+    for (const value of machineCutList.values()) {
+      const series = this.buildMachineSeriesFromWindows(
+        value.windows,
+        BAR_LENGTH,
+      );
+      if (series.length === 0) continue;
 
-      const combinedName = `${hojaProfileName} + ${mosquiteroProfileName}`;
+      const sectionName = value.mosqProfileName
+        ? `${value.hojaProfileName} + ${value.mosqProfileName}`
+        : value.hojaProfileName;
 
-      if (machineSeries !== null && machineSeries.length > 0) {
-        if (!optimizationResult[combinedName])
-          optimizationResult[combinedName] = [];
-        optimizationResult[combinedName].push({
-          color,
-          totalBars: machineSeries.length * 3,
-          machineSeries: true,
-          totalHojaBars: machineSeries.length * 2,
-          totalCedazoBars: machineSeries.length * 1,
-          series: machineSeries,
-          bars: [],
-        });
-      } else {
-        if (combinedBins.length > 0)
-          this.formatAndAddResultLabeled(
-            optimizationResult,
-            combinedName,
-            color,
-            combinedBins,
-            BAR_LENGTH,
-          );
-      }
+      const totalHojaBars = series.reduce((s, x) => s + x.hojaBars, 0);
+      const totalMosqBars = series.reduce((s, x) => s + x.mosqBars, 0);
 
-      if (hojaOnlyBins.length > 0)
-        this.formatAndAddResultLabeled(
-          optimizationResult,
-          hojaProfileName,
-          color,
-          hojaOnlyBins,
-          BAR_LENGTH,
-        );
-      if (mosquiteroOnlyBins.length > 0)
-        this.formatAndAddResultLabeled(
-          optimizationResult,
-          mosquiteroProfileName,
-          color,
-          mosquiteroOnlyBins,
-          BAR_LENGTH,
-        );
+      if (!optimizationResult[sectionName]) optimizationResult[sectionName] = [];
+      optimizationResult[sectionName].push({
+        color: value.color,
+        machineSeries: true,
+        totalBars: totalHojaBars + totalMosqBars,
+        totalHojaBars,
+        totalCedazoBars: totalMosqBars,
+        series: series.map((s, i) => ({ serieIndex: i + 1, ...s })),
+        bars: [],
+      });
     }
 
     return optimizationResult;
@@ -1344,6 +1382,106 @@ export class ReportsService {
         bins.push({ cuts: [cut], remaining: barLength - effective });
     }
     return bins.map((b) => b.cuts);
+  }
+
+  // ── Serie de máquina ────────────────────────────────────────────────────
+  // La cortadora carga varias barras y las corta con el MISMO patrón a la vez:
+  //   · con mosquitero → 2 barras de hoja + 1 de mosquitero
+  //   · sin mosquitero → 2 barras de hoja (sin la de mosquitero)
+  // Cada "pasada" produce hasta 2 hojas + 1 mosquitero. Una ventana con más
+  // hojas (3H, 4H) se parte en varias pasadas: p.ej. 3 hojas + 2 mosquiteros
+  // = (2 hojas + 1 mosquitero) + (1 hoja + 1 mosquitero).
+  // Las piezas de todas las ventanas con la misma "firma" de pasada se empacan
+  // juntas (FFD) en barras de 580 cm para aprovechar la barra y reducir sobra.
+  private buildMachineSeriesFromWindows(
+    windows: {
+      label: string;
+      unit: LabeledCut[];
+      nHoja: number;
+      nMosq: number;
+    }[],
+    barLength: number,
+  ): {
+    hojaBars: number;
+    mosqBars: number;
+    cuts: LabeledCut[];
+    totalUsed: number;
+    waste: number;
+    efficiency: number;
+  }[] {
+    // 1. Descomponer cada ventana en pasadas y agrupar por firma (hojas,mosq).
+    const poolBySig = new Map<
+      string,
+      { hojaBars: number; mosqBars: number; cuts: LabeledCut[] }
+    >();
+    for (const w of windows) {
+      let h = w.nHoja;
+      let m = w.nMosq;
+      const passes: { hb: number; mb: number }[] = [];
+      while (h > 0) {
+        const hb = Math.min(h, 2);
+        const mb = m > 0 ? 1 : 0;
+        passes.push({ hb, mb });
+        h -= hb;
+        m -= mb;
+      }
+      // Mosquiteros sobrantes (raro): se cortan solos.
+      while (m > 0) {
+        passes.push({ hb: 0, mb: 1 });
+        m -= 1;
+      }
+      for (const pass of passes) {
+        const sig = `${pass.hb}h${pass.mb}m`;
+        if (!poolBySig.has(sig))
+          poolBySig.set(sig, {
+            hojaBars: pass.hb,
+            mosqBars: pass.mb,
+            cuts: [],
+          });
+        poolBySig.get(sig)!.cuts.push(...w.unit);
+      }
+    }
+
+    // 2. Empacar cada firma en barras (FFD con kerf) → cada barra es una serie.
+    //    Orden: primero las pasadas con más barras (2h1m antes que 1h1m, etc.).
+    const sigs = [...poolBySig.keys()].sort((a, b) => {
+      const pa = poolBySig.get(a)!;
+      const pb = poolBySig.get(b)!;
+      return (
+        pb.hojaBars + pb.mosqBars - (pa.hojaBars + pa.mosqBars) ||
+        pb.hojaBars - pa.hojaBars
+      );
+    });
+
+    const series: {
+      hojaBars: number;
+      mosqBars: number;
+      cuts: LabeledCut[];
+      totalUsed: number;
+      waste: number;
+      efficiency: number;
+    }[] = [];
+
+    for (const sig of sigs) {
+      const pool = poolBySig.get(sig)!;
+      const bins = this.optimizeCutsLabeled(pool.cuts, barLength);
+      for (const bin of bins) {
+        const sorted = [...bin].sort((a, b) => b.length - a.length);
+        const totalUsed = sorted.reduce((s, c) => s + c.length, 0);
+        series.push({
+          hojaBars: pool.hojaBars,
+          mosqBars: pool.mosqBars,
+          cuts: sorted,
+          totalUsed: Number(totalUsed.toFixed(1)),
+          waste: Number(
+            (barLength - totalUsed - sorted.length * KERF_CM).toFixed(1),
+          ),
+          efficiency: Number(((totalUsed / barLength) * 100).toFixed(2)),
+        });
+      }
+    }
+
+    return series;
   }
 
   private optimizeCombinedCutsLabeled(
