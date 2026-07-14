@@ -47,6 +47,7 @@ enum QuotationStatus {
 enum Role {
   ADMIN
   VENDEDOR
+  SUPERVISOR
 }
 
 enum ChecklistType {
@@ -72,6 +73,33 @@ model User {
   refreshTokens  RefreshToken[]
 
   @@map("users")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PERMISOS (configurable por rol desde el panel admin, sin migraciones)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Permission {
+  id              Int              @id @default(autoincrement())
+  key             String           @unique
+  label           String
+  category        String
+  createdAt       DateTime         @default(now())
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           Int        @id @default(autoincrement())
+  role         Role
+  permissionId Int
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  allowed      Boolean    @default(false)
+  updatedAt    DateTime   @updatedAt
+
+  @@unique([role, permissionId])
+  @@map("role_permissions")
 }
 
 model Client {

@@ -14,6 +14,8 @@ import {
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
+import { PermissionsGuard } from '../permissions/permissions.guard';
+import { RequirePermission } from '../permissions/permission.decorator';
 import { QuotationsService } from './quotations.service';
 import {
   CreateQuotationDto,
@@ -26,11 +28,15 @@ import { UpdateQuotationDto } from './dto/update-quotation.dto';
 export class QuotationsController {
   constructor(private readonly quotationsService: QuotationsService) {}
 
+  @UseGuards(PermissionsGuard)
+  @RequirePermission('quotations.create')
   @Post()
   create(@Body() createQuotationDto: CreateQuotationDto, @Request() req) {
     return this.quotationsService.create(createQuotationDto, req.user);
   }
 
+  @UseGuards(PermissionsGuard)
+  @RequirePermission('quotations.view')
   @Get()
   findAll(
     @Request() req,
@@ -47,6 +53,8 @@ export class QuotationsController {
     });
   }
 
+  @UseGuards(PermissionsGuard)
+  @RequirePermission('quotations.view')
   @Get(':id')
   findOne(@Param('id', ParseIntPipe) id: number, @Request() req) {
     return this.quotationsService.findOne(id, req.user);

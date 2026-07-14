@@ -13,6 +13,8 @@ import {
 } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { PermissionsGuard } from '../permissions/permissions.guard';
+import { RequirePermission } from '../permissions/permission.decorator';
 import { ReportsService } from './reports.service';
 
 @UseGuards(JwtAuthGuard)
@@ -20,6 +22,8 @@ import { ReportsService } from './reports.service';
 export class ReportsController {
   constructor(private readonly reportsService: ReportsService) {}
 
+  @UseGuards(PermissionsGuard)
+  @RequirePermission('reports.profiles')
   @SkipThrottle()
   @Get('order/:orderId/profiles')
   generateProfilesReport(@Param('orderId', ParseIntPipe) orderId: number) {
@@ -34,6 +38,8 @@ export class ReportsController {
     return this.reportsService.generateProfilesReportByQuotation(quotationId);
   }
 
+  @UseGuards(PermissionsGuard)
+  @RequirePermission('reports.cut_optimizer')
   @SkipThrottle()
   @Get('order/:orderId/optimize-cuts')
   generateCutOptimizationReport(
@@ -46,6 +52,8 @@ export class ReportsController {
   // Ejecuta el algoritmo FFD sobre todas las ventanas de los pedidos
   // seleccionados tratadas como un solo lote, minimizando desperdicio.
   // Retorna además la lista de ventanas con su proyecto para identificación.
+  @UseGuards(PermissionsGuard)
+  @RequirePermission('reports.cut_optimizer')
   @Post('orders/optimize-cuts')
   generateMultiOrderCutOptimization(
     @Body() body: { orderIds: number[] },
@@ -61,6 +69,8 @@ export class ReportsController {
   }
 
   // ─── NUEVO: Optimización de corte de vidrio ─────────────────────────────────
+  @UseGuards(PermissionsGuard)
+  @RequirePermission('reports.glass_cut')
   @SkipThrottle()
   @Get('order/:orderId/glass-cuts')
   generateGlassCutReport(@Param('orderId', ParseIntPipe) orderId: number) {
@@ -77,6 +87,8 @@ export class ReportsController {
   }
 
   // ─── NUEVO: Resumen financiero de un pedido específico ──────────────────
+  @UseGuards(PermissionsGuard)
+  @RequirePermission('reports.financial_summary')
   @SkipThrottle()
   @Get('order/:orderId/financial')
   getOrderFinancialSummary(@Param('orderId', ParseIntPipe) orderId: number) {
@@ -85,6 +97,8 @@ export class ReportsController {
 
   // ─── NUEVO: Dashboard de ganancias con filtros opcionales ───────────────
   // GET /reports/dashboard/profits?fromDate=2025-01-01&toDate=2025-12-31&status=completado
+  @UseGuards(PermissionsGuard)
+  @RequirePermission('reports.dashboard_profits')
   @SkipThrottle()
   @Get('dashboard/profits')
   getDashboardProfits(

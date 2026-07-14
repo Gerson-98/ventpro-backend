@@ -6,8 +6,9 @@ import { QuotationsController } from './quotations.controller';
 import { PrismaModule } from '../prisma/prisma.module';
 import { WindowsModule } from '../windows/windows.module';
 import { CostCalculatorModule } from '../cost-calculator/cost-calculator.module';
+import { PermissionsModule } from '../permissions/permissions.module';
 @Module({
-  imports: [PrismaModule, WindowsModule, CostCalculatorModule],
+  imports: [PrismaModule, WindowsModule, CostCalculatorModule, PermissionsModule],
   controllers: [QuotationsController],
   providers: [QuotationsService],
 })

@@ -11,8 +11,9 @@ import {
   RescheduleOrderDto,
   UpdateOrderStatusDto,
 } from './dto/update-order.dto';
-import { OrderStatus, QuotationStatus } from '@prisma/client';
+import { OrderStatus, QuotationStatus, Role } from '@prisma/client';
 import { CostCalculatorService } from '../cost-calculator/cost-calculator.service';
+import { PermissionsService } from '../permissions/permissions.service';
 
 interface AuthUser {
   id: number;
@@ -25,6 +26,7 @@ export class OrdersService {
   constructor(
     private prisma: PrismaService,
     private costCalculator: CostCalculatorService,
+    private permissionsService: PermissionsService,
   ) {}
 
   // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -32,6 +34,19 @@ export class OrdersService {
     return user.role === 'ADMIN';
   }
 
+  // Lectura amplia (listar/ver cualquier pedido, sin importar quién lo generó).
+  // ADMIN siempre; VENDEDOR/SUPERVISOR según el permiso `orders.view_all`
+  // configurable desde el panel admin — por defecto false para VENDEDOR
+  // (mantiene el comportamiento actual) y true para SUPERVISOR.
+  private async canViewAllOrders(user: AuthUser): Promise<boolean> {
+    if (this.isAdmin(user)) return true;
+    return this.permissionsService.can(user.role as Role, 'orders.view_all');
+  }
+
+  // Ownership estricta — usada por acciones que MUTAN datos sensibles
+  // (estado, total, proyecto, medidas). Nunca se relaja por `orders.view_all`
+  // ni por ningún otro permiso de solo-lectura: solo ADMIN o el vendedor
+  // dueño de la cotización que generó el pedido.
   private async assertOwnership(
     orderId: number,
     user: AuthUser,
@@ -53,6 +68,34 @@ export class OrdersService {
         'No tienes permiso para modificar este pedido.',
       );
     }
+  }
+
+  // Permiso para reprogramar fecha de instalación — más laxo que
+  // assertOwnership: además del dueño y ADMIN, cualquier rol con el permiso
+  // configurable `orders.reschedule` (ej. SUPERVISOR) puede reprogramar
+  // cualquier pedido, sin necesidad de ser dueño de la cotización que lo
+  // generó. Esto NUNCA habilita cambiar estado ni total — eso sigue detrás
+  // de assertOwnership estricta.
+  private async assertCanReschedule(
+    orderId: number,
+    user: AuthUser,
+  ): Promise<void> {
+    if (this.isAdmin(user)) return;
+    const hasReschedulePermission = await this.permissionsService.can(
+      user.role as Role,
+      'orders.reschedule',
+    );
+    if (hasReschedulePermission) {
+      const exists = await this.prisma.order.findUnique({
+        where: { id: orderId },
+        select: { id: true },
+      });
+      if (!exists) {
+        throw new NotFoundException(`Pedido #${orderId} no encontrado.`);
+      }
+      return;
+    }
+    await this.assertOwnership(orderId, user);
   }
 
   // ─── create ──────────────────────────────────────────────────────────────
@@ -84,8 +127,8 @@ export class OrdersService {
   }
 
   // ─── findAll ──────────────────────────────────────────────────────────────
-  // Admin: todos los pedidos
-  // Vendedor: solo los pedidos generados desde sus cotizaciones
+  // ADMIN y roles con permiso `orders.view_all` (ej. SUPERVISOR): todos los pedidos.
+  // VENDEDOR (por defecto): solo los pedidos generados desde sus cotizaciones.
   async findAll(
     user: AuthUser,
     page = 1,
@@ -95,7 +138,7 @@ export class OrdersService {
     const safeLimit = Math.min(limit, 100);
     const skip = (page - 1) * safeLimit;
 
-    const ownershipClause = this.isAdmin(user)
+    const ownershipClause = (await this.canViewAllOrders(user))
       ? {}
       : { generatedFromQuotation: { userId: user.id } };
 
@@ -198,7 +241,7 @@ export class OrdersService {
     });
     if (!order) throw new NotFoundException(`Pedido #${id} no encontrado.`);
     if (
-      !this.isAdmin(user) &&
+      !(await this.canViewAllOrders(user)) &&
       order.generatedFromQuotation?.userId !== user.id
     ) {
       throw new ForbiddenException('No tienes permiso para ver este pedido.');
@@ -344,7 +387,7 @@ export class OrdersService {
     rescheduleOrderDto: RescheduleOrderDto,
     user: AuthUser,
   ) {
-    await this.assertOwnership(id, user);
+    await this.assertCanReschedule(id, user);
 
     const { installationStartDate, installationEndDate } = rescheduleOrderDto;
 

@@ -33,6 +33,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
 import { AppSettingsModule } from './app-settings/app-settings.module';
 import { WindowSeriesModule } from './window-series/window-series.module';
 import { WindowCategoriesModule } from './window-categories/window-categories.module';
+import { PermissionsModule } from './permissions/permissions.module';
 
 @Module({
   imports: [
@@ -77,6 +78,7 @@ import { WindowCategoriesModule } from './window-categories/window-categories.mo
     AppSettingsModule,
     WindowSeriesModule,
     WindowCategoriesModule,
+    PermissionsModule,
   ],
   controllers: [AppController, UploadsController],
   providers: [
