@@ -33,10 +33,15 @@ enum MaterialType {
 enum OrderStatus {
   en_proceso
   en_fabricacion
-  listo_para_instalar
+  fabricado
+  agendado
   en_ruta
   completado
   cancelado
+  // listo_para_instalar: legado, ya no se asigna a pedidos nuevos (ver
+  // migración 20260716000000_add_fabricado_agendado_statuses). Se conserva en
+  // el enum para no romper el valor de Postgres; el código ya no lo usa.
+  listo_para_instalar
 }
 
 enum QuotationStatus {
@@ -461,8 +466,15 @@ model Order {
   clientId                 Int?
   include_iva              Boolean      @default(false)
   notes                    String?
-  installationStartDate    DateTime?
-  installationEndDate      DateTime?
+  // Fecha de fabricación — columna física sigue llamándose installationStartDate/
+  // EndDate en la BD (se usa @map para no requerir un ALTER TABLE RENAME COLUMN
+  // sobre datos existentes); conceptualmente ahora es la fecha del Calendario
+  // de Fabricación (el calendario original, renombrado).
+  fabricationStartDate     DateTime?    @map("installationStartDate")
+  fabricationEndDate       DateTime?    @map("installationEndDate")
+  // Fecha real de instalación — Calendario de Instalación (nuevo, columnas nuevas).
+  realInstallationStartDate DateTime?
+  realInstallationEndDate   DateTime?
   createdAt                DateTime     @default(now())
   updatedAt                DateTime     @updatedAt
   version                  Int          @default(0)

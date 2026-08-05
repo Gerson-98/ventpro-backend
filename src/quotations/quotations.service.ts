@@ -498,10 +498,15 @@ export class QuotationsService {
   ) {
     await this.assertOwnership(id, user);
 
+    // Estos campos siguen llamándose "installation*" en el DTO por
+    // compatibilidad con el frontend, pero representan la fecha de
+    // FABRICACIÓN (Calendario de Fabricación) — el primer paso tras
+    // confirmar. La fecha real de instalación se agenda después, por
+    // separado, cuando el pedido está "fabricado".
     const { installationStartDate, installationEndDate } = confirmQuotationDto;
     if (!installationStartDate || !installationEndDate) {
       throw new BadRequestException(
-        'Se requieren las fechas de inicio y fin de instalación para confirmar.',
+        'Se requieren las fechas de inicio y fin de fabricación para confirmar.',
       );
     }
 
@@ -631,8 +636,8 @@ export class QuotationsService {
             include_iva: quotation.include_iva ?? false,
             notes: quotation.notes ?? null,
             clientId: quotation.clientId,
-            installationStartDate: startDate,
-            installationEndDate: endDate,
+            fabricationStartDate: startDate,
+            fabricationEndDate: endDate,
           },
         });
       } else {
@@ -640,13 +645,14 @@ export class QuotationsService {
           data: {
             project: quotation.project,
             total: quotation.total_price,
-            status: OrderStatus.en_proceso,
+            // Ya nace con fecha de fabricación agendada → arranca en_fabricacion
+            status: OrderStatus.en_fabricacion,
             clientId: quotation.clientId,
             include_iva: quotation.include_iva ?? false,
             notes: quotation.notes ?? null,
             generatedFromQuotationId: id,
-            installationStartDate: startDate,
-            installationEndDate: endDate,
+            fabricationStartDate: startDate,
+            fabricationEndDate: endDate,
             windows: { create: windowsToCreate },
           },
         });

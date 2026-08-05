@@ -19,6 +19,7 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import {
   UpdateOrderDto,
   RescheduleOrderDto,
+  ScheduleInstallationDto,
   UpdateOrderStatusDto,
 } from './dto/update-order.dto';
 
@@ -27,9 +28,29 @@ import {
 export class OrdersController {
   constructor(private readonly ordersService: OrdersService) {}
 
+  // Calendario de Fabricación
   @Get('scheduled')
   findScheduled(@Request() req) {
     return this.ordersService.findScheduled(req.user);
+  }
+
+  // Calendario de Instalación
+  @Get('scheduled-installation')
+  findScheduledInstallation(@Request() req) {
+    return this.ordersService.findScheduledInstallation(req.user);
+  }
+
+  // Tabla filtrable de pedidos listos/agendados para instalación
+  @Get('ready-to-schedule-installation')
+  findReadyToScheduleInstallation(
+    @Request() req,
+    @Query('search') search?: string,
+    @Query('status') status?: string,
+  ) {
+    return this.ordersService.findReadyToScheduleInstallation(req.user, {
+      search,
+      status,
+    });
   }
 
   @Get()
@@ -73,6 +94,15 @@ export class OrdersController {
     @Request() req,
   ) {
     return this.ordersService.reschedule(id, rescheduleOrderDto, req.user);
+  }
+
+  @Patch(':id/schedule-installation')
+  scheduleInstallation(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ScheduleInstallationDto,
+    @Request() req,
+  ) {
+    return this.ordersService.scheduleInstallation(id, dto, req.user);
   }
 
   @Patch(':id/status')

@@ -51,7 +51,7 @@ export class DashboardService {
 
       // Pedidos por estado
       this.prisma.order.count({
-        where: { ...orderWhere, status: { in: ['en_proceso', 'en_fabricacion', 'listo_para_instalar', 'en_ruta'] } },
+        where: { ...orderWhere, status: { in: ['en_proceso', 'en_fabricacion', 'fabricado', 'agendado', 'en_ruta'] } },
       }),
       this.prisma.order.count({
         where: { ...orderWhere, status: 'completado' },

@@ -543,7 +543,7 @@ export class ReportsService {
         total: true,
         status: true,
         include_iva: true,
-        installationStartDate: true,
+        fabricationStartDate: true,
         createdAt: true,
         client: { select: { name: true } },
       },
@@ -565,7 +565,7 @@ export class ReportsService {
       profit,
       profitMargin: Number(profitMargin.toFixed(2)),
       createdAt: order.createdAt,
-      installationStartDate: order.installationStartDate,
+      fabricationStartDate: order.fabricationStartDate,
     };
   }
 
@@ -613,7 +613,7 @@ export class ReportsService {
         status: true,
         include_iva: true,
         createdAt: true,
-        installationStartDate: true,
+        fabricationStartDate: true,
         client: { select: { name: true } },
         generatedFromQuotation: {
           select: { user: { select: { id: true, name: true } } },
@@ -640,7 +640,7 @@ export class ReportsService {
             profit,
             profitMargin: Number(profitMargin.toFixed(2)),
             createdAt: order.createdAt,
-            installationStartDate: order.installationStartDate,
+            fabricationStartDate: order.fabricationStartDate,
           };
         } catch {
           const salePrice = order.total || 0;
@@ -655,7 +655,7 @@ export class ReportsService {
             profit: salePrice,
             profitMargin: 100,
             createdAt: order.createdAt,
-            installationStartDate: order.installationStartDate,
+            fabricationStartDate: order.fabricationStartDate,
           };
         }
       }),

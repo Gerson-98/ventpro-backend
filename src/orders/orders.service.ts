@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   UpdateOrderDto,
   RescheduleOrderDto,
+  ScheduleInstallationDto,
   UpdateOrderStatusDto,
 } from './dto/update-order.dto';
 import { OrderStatus, QuotationStatus, Role } from '@prisma/client';
@@ -340,26 +341,96 @@ export class OrdersService {
     });
   }
 
-  // ─── findScheduled ────────────────────────────────────────────────────────
-  // Admin: todos los pedidos agendados (calendario completo)
-  // Vendedor: solo sus pedidos agendados
+  // ─── findScheduled (Calendario de Fabricación) ─────────────────────────────
+  // Todos los pedidos con fecha de fabricación agendada, sin importar rol
+  // (igual que hoy: el calendario es una vista compartida por todo el equipo).
   async findScheduled(user: AuthUser) {
     return this.prisma.order.findMany({
       where: {
-        installationStartDate: { not: null },
+        fabricationStartDate: { not: null },
         status: { not: OrderStatus.cancelado },
       },
       select: {
         id: true,
         project: true,
-        installationStartDate: true,
-        installationEndDate: true,
+        fabricationStartDate: true,
+        fabricationEndDate: true,
         status: true,
         client: {
           select: { name: true },
         },
       },
-      orderBy: { installationStartDate: 'asc' },
+      orderBy: { fabricationStartDate: 'asc' },
+    });
+  }
+
+  // ─── findScheduledInstallation (Calendario de Instalación) ─────────────────
+  // Pedidos con fecha real de instalación agendada.
+  async findScheduledInstallation(user: AuthUser) {
+    return this.prisma.order.findMany({
+      where: {
+        realInstallationStartDate: { not: null },
+        status: { not: OrderStatus.cancelado },
+      },
+      select: {
+        id: true,
+        project: true,
+        realInstallationStartDate: true,
+        realInstallationEndDate: true,
+        status: true,
+        client: {
+          select: { name: true },
+        },
+      },
+      orderBy: { realInstallationStartDate: 'asc' },
+    });
+  }
+
+  // ─── findReadyToScheduleInstallation ───────────────────────────────────────
+  // Pedidos en estado "fabricado" (terminaron fabricación) que aún no tienen
+  // fecha real de instalación — la lista que alimenta la tabla filtrable
+  // arriba del Calendario de Instalación.
+  async findReadyToScheduleInstallation(
+    user: AuthUser,
+    filters: { search?: string; status?: string } = {},
+  ) {
+    const ownershipClause = (await this.canViewAllOrders(user))
+      ? {}
+      : { generatedFromQuotation: { userId: user.id } };
+
+    const statusClause =
+      filters.status && filters.status !== 'todos'
+        ? { status: filters.status as OrderStatus }
+        : { status: { in: [OrderStatus.fabricado, OrderStatus.agendado] } };
+
+    const searchClause =
+      filters.search && filters.search.trim()
+        ? {
+            OR: [
+              { project: { contains: filters.search, mode: 'insensitive' as const } },
+              {
+                client: {
+                  name: { contains: filters.search, mode: 'insensitive' as const },
+                },
+              },
+            ],
+          }
+        : {};
+
+    return this.prisma.order.findMany({
+      where: { ...ownershipClause, ...statusClause, ...searchClause },
+      select: {
+        id: true,
+        project: true,
+        status: true,
+        fabricationStartDate: true,
+        fabricationEndDate: true,
+        realInstallationStartDate: true,
+        realInstallationEndDate: true,
+        client: { select: { name: true } },
+        generatedFromQuotation: { select: { user: { select: { name: true } } } },
+      },
+      orderBy: { fabricationEndDate: 'asc' },
     });
   }
 
@@ -381,7 +452,11 @@ export class OrdersService {
     });
   }
 
-  // ─── reschedule ───────────────────────────────────────────────────────────
+  // ─── reschedule (Calendario de Fabricación) ────────────────────────────────
+  // Al agendar la fecha de fabricación por primera vez (pedido recién
+  // confirmado, aún en_proceso), el estado avanza automáticamente a
+  // "en_fabricacion". Si ya estaba más adelante en el flujo, reprogramar la
+  // fecha NO retrocede el estado.
   async reschedule(
     id: number,
     rescheduleOrderDto: RescheduleOrderDto,
@@ -401,8 +476,48 @@ export class OrdersService {
     return this.prisma.order.update({
       where: { id },
       data: {
-        installationStartDate: startDate,
-        installationEndDate: endDate,
+        fabricationStartDate: startDate,
+        fabricationEndDate: endDate,
+        status:
+          order.status === OrderStatus.en_proceso
+            ? OrderStatus.en_fabricacion
+            : undefined,
+      },
+    });
+  }
+
+  // ─── scheduleInstallation (Calendario de Instalación) ──────────────────────
+  // Agenda la fecha REAL de instalación. Al hacerlo, el pedido pasa
+  // automáticamente a "agendado" — salvo que ya haya avanzado más
+  // (en_ruta/completado/cancelado), en cuyo caso solo se actualiza la fecha.
+  async scheduleInstallation(
+    id: number,
+    dto: ScheduleInstallationDto,
+    user: AuthUser,
+  ) {
+    await this.assertCanReschedule(id, user);
+
+    const order = await this.prisma.order.findUnique({ where: { id } });
+    if (!order)
+      throw new NotFoundException(`Pedido con ID #${id} no encontrado.`);
+
+    const startDate = new Date(dto.installationStartDate);
+    const endDate = new Date(dto.installationEndDate);
+
+    const statusesNotToOverride: OrderStatus[] = [
+      OrderStatus.en_ruta,
+      OrderStatus.completado,
+      OrderStatus.cancelado,
+    ];
+
+    return this.prisma.order.update({
+      where: { id },
+      data: {
+        realInstallationStartDate: startDate,
+        realInstallationEndDate: endDate,
+        status: statusesNotToOverride.includes(order.status)
+          ? undefined
+          : OrderStatus.agendado,
       },
     });
   }
