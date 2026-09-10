@@ -8,7 +8,7 @@ export class WindowCalculationsService {
   async findAllTypesWithCalculations() {
     // CAMBIO: window_types -> windowType
     return this.prisma.windowType.findMany({
-      include: { calculation: true },
+      include: { calculation: true, series: true },
       orderBy: { name: 'asc' },
     });
   }

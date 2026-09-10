@@ -393,21 +393,32 @@ export class CostCalculatorService {
         if (glassColor?.material) {
           const materialVidrio = glassColor.material;
           const areaVidrioCm2 = mosquiteroAncho * mosquiteroAlto * cantVidrios;
-          const planchasEnteras = Math.ceil(
-            (areaVidrioCm2 / PLANCHA_VIDRIO_CM2) * quantity,
+          // Se cobra por cuartos de plancha (no por plancha completa): una
+          // ventana pequeña que ocupa solo una fracción de la plancha no debe
+          // pagar el precio de la plancha entera. Cada cuarto ≈ 1 m².
+          const CUARTO_PLANCHA_CM2 = PLANCHA_VIDRIO_CM2 / 4;
+          const cuartosNecesarios = Math.max(
+            1,
+            Math.ceil((areaVidrioCm2 / CUARTO_PLANCHA_CM2) * quantity),
           );
           const precioVidrio = esBlanco
             ? (materialVidrio.price_white ?? materialVidrio.price_color ?? 0)
             : (materialVidrio.price_color ?? materialVidrio.price_white ?? 0);
+          const precioPorCuarto = precioVidrio / 4;
+          const planchasEquivalentes = Number(
+            (cuartosNecesarios / 4).toFixed(2),
+          );
 
           detalle.push({
             material_id: materialVidrio.id,
             nombre: materialVidrio.name,
             tipo: 'VIDRIO',
-            cantidad: planchasEnteras,
+            cantidad: planchasEquivalentes,
             precio_unitario: precioVidrio,
-            costo_total: planchasEnteras * precioVidrio,
-            unidad: 'planchas',
+            costo_total: Number(
+              (cuartosNecesarios * precioPorCuarto).toFixed(2),
+            ),
+            unidad: 'planchas (por cuartos)',
           });
         }
       }

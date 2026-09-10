@@ -847,6 +847,79 @@ export class ReportsService {
     };
   }
 
+  // ─── NUEVO: Corte de vidrio combinado para múltiples pedidos ────────────────
+  // Fusiona las ventanas de varios pedidos (mismo mecanismo que
+  // generateMultiOrderCutOptimization) y calcula el corte de vidrio como un
+  // solo lote — el desperdicio de un proyecto puede aprovecharse para otro.
+  // Devuelve además una comparación contra cortar cada pedido por separado,
+  // para que se vea el ahorro real en planchas.
+  async generateMultiOrderGlassCutReport(orderIds: number[]) {
+    const orders = await this.prisma.order.findMany({
+      where: { id: { in: orderIds } },
+      include: {
+        windows: {
+          include: { windowType: true, pvcColor: true, glassColor: true },
+        },
+      },
+    });
+    if (orders.length === 0) {
+      throw new NotFoundException('No se encontraron pedidos');
+    }
+
+    // Preservar orden de orderIds solicitado
+    const ordersSorted = orderIds
+      .map((id) => orders.find((o) => o.id === id))
+      .filter((o): o is typeof orders[number] => !!o);
+
+    const mergedWindows: any[] = [];
+    const windowSummaries: Array<{
+      index: number;
+      label: string;
+      orderId: number;
+      project: string;
+    }> = [];
+
+    ordersSorted.forEach((order) => {
+      order.windows.forEach((w) => {
+        mergedWindows.push(w);
+        windowSummaries.push({
+          index: mergedWindows.length,
+          label: `V${mergedWindows.length}`,
+          orderId: order.id,
+          project: order.project,
+        });
+      });
+    });
+
+    const glassCutData = await this.buildGlassCutData(mergedWindows);
+
+    // ── Comparación: cortando cada pedido por separado vs combinado ──────────
+    const planchasCombinado: number = (Object.values(glassCutData) as any[]).reduce(
+      (s: number, g: any) => s + g.minPlanchas,
+      0,
+    );
+
+    let planchasSeparado = 0;
+    for (const order of ordersSorted) {
+      const individualData = await this.buildGlassCutData(order.windows);
+      planchasSeparado += (Object.values(individualData) as any[]).reduce(
+        (s: number, g: any) => s + g.minPlanchas,
+        0,
+      );
+    }
+
+    return {
+      glassCutData,
+      windows: windowSummaries,
+      orders: ordersSorted.map((o) => ({ id: o.id, project: o.project })),
+      comparison: {
+        planchasSeparado,
+        planchasCombinado,
+        ahorro: planchasSeparado - planchasCombinado,
+      },
+    };
+  }
+
   async generateGlassCutReport(orderId: number) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },

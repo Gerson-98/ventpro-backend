@@ -77,6 +77,23 @@ export class ReportsController {
     return this.reportsService.generateGlassCutReport(orderId);
   }
 
+  // ─── NUEVO: Corte de vidrio combinado para múltiples pedidos ────────────────
+  // Combina el corte de vidrio de varios pedidos en un solo lote para
+  // aprovechar el desperdicio entre proyectos (ahorra planchas).
+  @UseGuards(PermissionsGuard)
+  @RequirePermission('reports.glass_cut')
+  @Post('orders/optimize-glass-cuts')
+  generateMultiOrderGlassCutReport(@Body() body: { orderIds: number[] }) {
+    if (!body?.orderIds || !Array.isArray(body.orderIds) || body.orderIds.length === 0) {
+      throw new BadRequestException('Debe proporcionar al menos un orderId');
+    }
+    const ids = body.orderIds.map((v) => Number(v)).filter((v) => Number.isInteger(v) && v > 0);
+    if (ids.length === 0) {
+      throw new BadRequestException('orderIds inválidos');
+    }
+    return this.reportsService.generateMultiOrderGlassCutReport(ids);
+  }
+
   // ─── NUEVO: Glass cut para cotizaciones ─────────────────────────────────────
   @SkipThrottle()
   @Get('quotation/:quotationId/glass-cuts')
