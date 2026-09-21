@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeOverrideRules, findOverrideRule } from '../common/override-rules.util';
+import { PerfilFormulasService } from '../perfil-formulas/perfil-formulas.service';
 
 interface AuthUser {
   id: number;
@@ -15,7 +16,10 @@ interface AuthUser {
 
 @Injectable()
 export class WindowsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private perfilFormulas: PerfilFormulasService,
+  ) {}
 
   private async assertWindowOwnership(
     windowId: number,
@@ -310,6 +314,34 @@ export class WindowsService {
     height: number,
     options: any = {},
   ) {
+    const windowType = await this.prisma.windowType.findUnique({
+      where: { id: windowTypeId },
+      select: { calc_engine: true },
+    });
+
+    // ── Motor de fórmulas nuevo (configurador paso a paso) ──────────────────
+    if (windowType?.calc_engine === 'formula') {
+      const resolved = await this.perfilFormulas.resolveMeasurements(windowTypeId, width, height);
+      const hoja = resolved['HOJA'] ?? { ancho: width, alto: height, piezas: 2 };
+      const vidrio = resolved['VIDRIO'] ?? hoja;
+
+      if (hoja.ancho <= 0 || hoja.alto <= 0 || vidrio.ancho <= 0 || vidrio.alto <= 0) {
+        throw new BadRequestException(
+          `Las medidas calculadas son inválidas para este tipo de ventana. ` +
+          `Verifica que las dimensiones (${width}×${height}cm) sean compatibles ` +
+          `con las fórmulas configuradas.`,
+        );
+      }
+
+      return {
+        hojaAncho: Number(hoja.ancho.toFixed(1)),
+        hojaAlto: Number(hoja.alto.toFixed(1)),
+        vidrioAncho: Number(vidrio.ancho.toFixed(1)),
+        vidrioAlto: Number(vidrio.alto.toFixed(1)),
+      };
+    }
+
+    // ── Sistema legado — comportamiento intacto ──────────────────────────────
     // CAMBIO: window_calculations -> windowCalculation
     const calcParams = await this.prisma.windowCalculation.findUnique({
       where: { window_type_id: windowTypeId },

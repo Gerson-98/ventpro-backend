@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AppSettingsService } from '../app-settings/app-settings.service';
 import { guillotinePackCount } from '../common/guillotine-pack';
 import { normalizeOverrideRules, findOverrideRule } from '../common/override-rules.util';
+import { PerfilFormulasService, SlotMeasurement } from '../perfil-formulas/perfil-formulas.service';
 
 interface WindowCostInput {
   window_type_id: number;
@@ -71,7 +72,31 @@ export class CostCalculatorService {
   constructor(
     private prisma: PrismaService,
     private appSettings: AppSettingsService,
+    private perfilFormulas: PerfilFormulasService,
   ) {}
+
+  // ── Motor de fórmulas (calc_engine = "formula") ───────────────────────────
+  // Devuelve null si el tipo de ventana usa el sistema legado (la mayoría) —
+  // en ese caso el código sigue exactamente el camino de siempre, intacto.
+  private async getFormulaMeasurements(
+    windowTypeId: number,
+    calcEngine: string | undefined,
+    width: number,
+    height: number,
+  ): Promise<Record<string, SlotMeasurement> | null> {
+    if (calcEngine !== 'formula') return null;
+    return this.perfilFormulas.resolveMeasurements(windowTypeId, width, height);
+  }
+
+  // Traduce una medida resuelta del motor nuevo al mismo formato de lista de
+  // longitudes (sin etiqueta) que produce getCutsFromRule — para que el
+  // bin-packing de barras funcione idéntico sin importar el motor.
+  private getCutsFromSlotMeasurement(measurement: SlotMeasurement): number[] {
+    const cuts: number[] = [];
+    for (let i = 0; i < measurement.piezas; i++) cuts.push(measurement.ancho);
+    for (let i = 0; i < measurement.piezas; i++) cuts.push(measurement.alto);
+    return cuts;
+  }
 
   private pvcColorCache = new Map<number, CacheEntry<any>>();
   private windowTypeCache = new Map<number, CacheEntry<any>>();
@@ -235,15 +260,32 @@ export class CostCalculatorService {
     const calcParams = await this.getCalcParams(window_type_id);
     const glassColorName = await this.getGlassColorName(input.glass_color_id);
 
-    const { hojaAncho, hojaAlto, vidrioDescuento } = this.calcularMedidasHoja(
+    const formulaMeasurements = await this.getFormulaMeasurements(
+      window_type_id,
+      windowType.calc_engine,
       width_cm,
       height_cm,
-      calcParams,
-      options,
     );
 
-    const mosquiteroAncho = Number((hojaAncho - vidrioDescuento).toFixed(2));
-    const mosquiteroAlto = Number((hojaAlto - vidrioDescuento).toFixed(2));
+    let hojaAncho: number;
+    let hojaAlto: number;
+    let mosquiteroAncho: number;
+    let mosquiteroAlto: number;
+
+    if (formulaMeasurements) {
+      const hoja = formulaMeasurements['HOJA'] ?? { ancho: width_cm, alto: height_cm, piezas: 2 };
+      const vidrio = formulaMeasurements['VIDRIO'] ?? hoja;
+      hojaAncho = hoja.ancho;
+      hojaAlto = hoja.alto;
+      mosquiteroAncho = vidrio.ancho;
+      mosquiteroAlto = vidrio.alto;
+    } else {
+      const legacy = this.calcularMedidasHoja(width_cm, height_cm, calcParams, options);
+      hojaAncho = legacy.hojaAncho;
+      hojaAlto = legacy.hojaAlto;
+      mosquiteroAncho = Number((hojaAncho - legacy.vidrioDescuento).toFixed(2));
+      mosquiteroAlto = Number((hojaAlto - legacy.vidrioDescuento).toFixed(2));
+    }
 
     // ── Determinar si lleva mosquitero y refuerzos ───────────────────────────
     const conMosquitero = this.tieneMosquitero(options, catalogo);
@@ -269,6 +311,7 @@ export class CostCalculatorService {
         {
           perfil: perfilesOverride.marco,
           regla: reglas.regla_marco,
+          slot: 'MARCO',
           ancho: width_cm,
           alto: height_cm,
           label: 'MARCO',
@@ -277,6 +320,7 @@ export class CostCalculatorService {
         {
           perfil: perfilesOverride.hoja,
           regla: reglas.regla_hoja,
+          slot: 'HOJA',
           ancho: hojaAncho,
           alto: hojaAlto,
           label: 'HOJA',
@@ -284,8 +328,11 @@ export class CostCalculatorService {
         },
         {
           // ── MOSQUITERO: solo si conMosquitero es true ──────────────────────
+          // (el motor de fórmulas no tiene slot de mosquitero — los productos
+          // del configurador nuevo sin mosquitero simplemente no traen perfil)
           perfil: perfilesOverride.mosquitero,
           regla: reglas.regla_mosquitero,
+          slot: 'MOSQUITERO',
           ancho: mosquiteroAncho,
           alto: mosquiteroAlto,
           label: 'MOSQUITERO',
@@ -294,6 +341,7 @@ export class CostCalculatorService {
         {
           perfil: perfilesOverride.batiente,
           regla: reglas.regla_batiente,
+          slot: 'BATIENTE',
           ancho: hojaAncho,
           alto: hojaAlto,
           label: 'BATIENTE',
@@ -302,6 +350,7 @@ export class CostCalculatorService {
         {
           perfil: perfilesOverride.tapajamba,
           regla: reglas.regla_tapajamba,
+          slot: 'TAPAJAMBA',
           ancho: width_cm,
           alto: height_cm,
           label: 'TAPAJAMBA',
@@ -309,13 +358,21 @@ export class CostCalculatorService {
         },
       ];
 
-      for (const { perfil, regla, ancho, alto, label, incluir } of perfiles) {
-        if (!incluir || !perfil || !regla) continue;
+      for (const { perfil, regla, slot, ancho, alto, label, incluir } of perfiles) {
+        if (!incluir || !perfil) continue;
 
         // ── Bin-packing real: genera los cortes individuales y los empaca ──
         // Math.ceil(totalCm/580 * qty) subestima cuando la regla tiene
         // multiplicador alto (ej: *4) porque no puede fraccionar barras.
-        const cortesPorVentana = this.getCutsFromRule(regla, ancho, alto);
+        let cortesPorVentana: number[];
+        if (formulaMeasurements) {
+          const measurement = formulaMeasurements[slot];
+          if (!measurement) continue;
+          cortesPorVentana = this.getCutsFromSlotMeasurement(measurement);
+        } else {
+          if (!regla) continue;
+          cortesPorVentana = this.getCutsFromRule(regla, ancho, alto);
+        }
         const todosLosCortes: number[] = [];
         for (let q = 0; q < quantity; q++) {
           todosLosCortes.push(...cortesPorVentana);
@@ -857,14 +914,32 @@ export class CostCalculatorService {
 
       const glassColorName = await this.getGlassColorName(win.glass_color_id);
 
-      const { hojaAncho, hojaAlto, vidrioDescuento } = this.calcularMedidasHoja(
+      const formulaMeasurements = await this.getFormulaMeasurements(
+        window_type_id,
+        windowType.calc_engine,
         width_cm,
         height_cm,
-        calcParams,
-        options,
       );
-      const mosquiteroAncho = Number((hojaAncho - vidrioDescuento).toFixed(2));
-      const mosquiteroAlto = Number((hojaAlto - vidrioDescuento).toFixed(2));
+
+      let hojaAncho: number;
+      let hojaAlto: number;
+      let mosquiteroAncho: number;
+      let mosquiteroAlto: number;
+
+      if (formulaMeasurements) {
+        const hoja = formulaMeasurements['HOJA'] ?? { ancho: width_cm, alto: height_cm, piezas: 2 };
+        const vidrio = formulaMeasurements['VIDRIO'] ?? hoja;
+        hojaAncho = hoja.ancho;
+        hojaAlto = hoja.alto;
+        mosquiteroAncho = vidrio.ancho;
+        mosquiteroAlto = vidrio.alto;
+      } else {
+        const legacy = this.calcularMedidasHoja(width_cm, height_cm, calcParams, options);
+        hojaAncho = legacy.hojaAncho;
+        hojaAlto = legacy.hojaAlto;
+        mosquiteroAncho = Number((hojaAncho - legacy.vidrioDescuento).toFixed(2));
+        mosquiteroAlto = Number((hojaAlto - legacy.vidrioDescuento).toFixed(2));
+      }
 
       const conMosquitero = this.tieneMosquitero(options, catalogo);
       const conRefuerzoHojas = this.tieneRefuerzoHojas(options);
@@ -879,6 +954,7 @@ export class CostCalculatorService {
       const perfiles = [
         {
           label: 'MARCO',
+          slot: 'MARCO',
           perfil: perfilesOverride.marco,
           regla: reglas.regla_marco,
           ancho: width_cm,
@@ -887,6 +963,7 @@ export class CostCalculatorService {
         },
         {
           label: 'HOJA',
+          slot: 'HOJA',
           perfil: perfilesOverride.hoja,
           regla: reglas.regla_hoja,
           ancho: hojaAncho,
@@ -895,6 +972,7 @@ export class CostCalculatorService {
         },
         {
           label: 'MOSQUITERO',
+          slot: 'MOSQUITERO',
           perfil: perfilesOverride.mosquitero,
           regla: reglas.regla_mosquitero,
           ancho: mosquiteroAncho,
@@ -903,6 +981,7 @@ export class CostCalculatorService {
         },
         {
           label: 'BATIENTE',
+          slot: 'BATIENTE',
           perfil: perfilesOverride.batiente,
           regla: reglas.regla_batiente,
           ancho: hojaAncho,
@@ -911,6 +990,7 @@ export class CostCalculatorService {
         },
         {
           label: 'TAPAJAMBA',
+          slot: 'TAPAJAMBA',
           perfil: perfilesOverride.tapajamba,
           regla: reglas.regla_tapajamba,
           ancho: width_cm,
@@ -919,14 +999,22 @@ export class CostCalculatorService {
         },
       ];
 
-      for (const { label, perfil, regla, ancho, alto, incluir } of perfiles) {
-        if (!incluir || !perfil || !regla) continue;
+      for (const { label, slot, perfil, regla, ancho, alto, incluir } of perfiles) {
+        if (!incluir || !perfil) continue;
 
         const precio = esBlanco
           ? (perfil.price_white ?? 0)
           : (perfil.price_color ?? perfil.price_white ?? 0);
 
-        const cortesPorVentana = this.getCutsFromRule(regla, ancho, alto);
+        let cortesPorVentana: number[];
+        if (formulaMeasurements) {
+          const measurement = formulaMeasurements[slot];
+          if (!measurement) continue;
+          cortesPorVentana = this.getCutsFromSlotMeasurement(measurement);
+        } else {
+          if (!regla) continue;
+          cortesPorVentana = this.getCutsFromRule(regla, ancho, alto);
+        }
 
         if (!perfilMap.has(perfil.id)) {
           perfilMap.set(perfil.id, { cuts: [], precio });
@@ -1081,16 +1169,27 @@ export class CostCalculatorService {
       const catalogo = await this.getCatalogo(window_type_id);
       if (!catalogo) continue;
 
+      const windowType = await this.getWindowType(window_type_id);
       const calcParams = await this.getCalcParams(window_type_id);
-      const { hojaAncho, hojaAlto, vidrioDescuento } = this.calcularMedidasHoja(
+      const formulaMeasurements = await this.getFormulaMeasurements(
+        window_type_id,
+        windowType?.calc_engine,
         width_cm,
         height_cm,
-        calcParams,
-        options,
       );
 
-      const vidrioAncho = Number((hojaAncho - vidrioDescuento).toFixed(2));
-      const vidrioAlto = Number((hojaAlto - vidrioDescuento).toFixed(2));
+      let vidrioAncho: number;
+      let vidrioAlto: number;
+      if (formulaMeasurements) {
+        const hoja = formulaMeasurements['HOJA'] ?? { ancho: width_cm, alto: height_cm, piezas: 2 };
+        const vidrio = formulaMeasurements['VIDRIO'] ?? hoja;
+        vidrioAncho = vidrio.ancho;
+        vidrioAlto = vidrio.alto;
+      } else {
+        const legacy = this.calcularMedidasHoja(width_cm, height_cm, calcParams, options);
+        vidrioAncho = Number((legacy.hojaAncho - legacy.vidrioDescuento).toFixed(2));
+        vidrioAlto = Number((legacy.hojaAlto - legacy.vidrioDescuento).toFixed(2));
+      }
 
       if (vidrioAncho <= 0 || vidrioAlto <= 0) continue;
 

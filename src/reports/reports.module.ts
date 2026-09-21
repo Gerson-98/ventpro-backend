@@ -7,9 +7,10 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { CostCalculatorService } from '../cost-calculator/cost-calculator.service';
 import { AppSettingsModule } from '../app-settings/app-settings.module';
 import { PermissionsModule } from '../permissions/permissions.module';
+import { PerfilFormulasModule } from '../perfil-formulas/perfil-formulas.module';
 
 @Module({
-  imports: [PrismaModule, AppSettingsModule, PermissionsModule],
+  imports: [PrismaModule, AppSettingsModule, PermissionsModule, PerfilFormulasModule],
   controllers: [ReportsController],
   providers: [ReportsService, CostCalculatorService],
 })

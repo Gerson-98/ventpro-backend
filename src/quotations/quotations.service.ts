@@ -15,6 +15,7 @@ import { WindowsService } from '../windows/windows.service';
 import { OrderStatus, QuotationStatus } from '@prisma/client';
 import { CostCalculatorService } from '../cost-calculator/cost-calculator.service';
 import { normalizeOverrideRules, findOverrideRule } from '../common/override-rules.util';
+import { PerfilFormulasService } from '../perfil-formulas/perfil-formulas.service';
 
 interface AuthUser {
   id: number;
@@ -28,6 +29,7 @@ export class QuotationsService {
     private prisma: PrismaService,
     private windowsService: WindowsService,
     private costCalculator: CostCalculatorService,
+    private perfilFormulas: PerfilFormulasService,
   ) {}
 
   /**
@@ -542,7 +544,13 @@ export class QuotationsService {
     });
     const calcMap = new Map(calculations.map((c) => [c.window_type_id, c]));
 
-    const windowsToCreate = quotation.quotation_windows.map((win) => {
+    const windowTypes = await this.prisma.windowType.findMany({
+      where: { id: { in: typeIds } },
+      select: { id: true, calc_engine: true },
+    });
+    const engineMap = new Map(windowTypes.map((w) => [w.id, w.calc_engine]));
+
+    const windowsToCreate = await Promise.all(quotation.quotation_windows.map(async (win) => {
       const winOptions = (win as any).options || {};
       const calcParams = calcMap.get(win.window_type_id);
 
@@ -551,7 +559,20 @@ export class QuotationsService {
       let vidrioAncho: number;
       let vidrioAlto: number;
 
-      if (!calcParams) {
+      if (engineMap.get(win.window_type_id) === 'formula') {
+        // ── Motor de fórmulas nuevo (configurador paso a paso) ──────────────
+        const resolved = await this.perfilFormulas.resolveMeasurements(
+          win.window_type_id,
+          win.width_cm,
+          win.height_cm,
+        );
+        const hoja = resolved['HOJA'] ?? { ancho: win.width_cm, alto: win.height_cm, piezas: 2 };
+        const vidrio = resolved['VIDRIO'] ?? hoja;
+        hojaAncho = hoja.ancho;
+        hojaAlto = hoja.alto;
+        vidrioAncho = vidrio.ancho;
+        vidrioAlto = vidrio.alto;
+      } else if (!calcParams) {
         hojaAncho = win.width_cm;
         hojaAlto = win.height_cm;
         vidrioAncho = win.width_cm;
@@ -612,7 +633,7 @@ export class QuotationsService {
         vidrioAncho: Number(vidrioAncho.toFixed(1)),
         vidrioAlto: Number(vidrioAlto.toFixed(1)),
       };
-    });
+    }));
 
     return this.prisma.$transaction(async (prisma) => {
       let resultOrder: { id: number };
