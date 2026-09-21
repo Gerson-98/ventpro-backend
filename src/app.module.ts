@@ -34,6 +34,7 @@ import { AppSettingsModule } from './app-settings/app-settings.module';
 import { WindowSeriesModule } from './window-series/window-series.module';
 import { WindowCategoriesModule } from './window-categories/window-categories.module';
 import { PermissionsModule } from './permissions/permissions.module';
+import { PerfilFormulasModule } from './perfil-formulas/perfil-formulas.module';
 
 @Module({
   imports: [
@@ -79,6 +80,7 @@ import { PermissionsModule } from './permissions/permissions.module';
     WindowSeriesModule,
     WindowCategoriesModule,
     PermissionsModule,
+    PerfilFormulasModule,
   ],
   controllers: [AppController, UploadsController],
   providers: [

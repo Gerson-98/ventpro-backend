@@ -304,6 +304,15 @@ model WindowType {
   category_id       Int?
   series            WindowSeries?        @relation(fields: [series_id], references: [id], onDelete: SetNull)
   category          WindowCategory?      @relation(fields: [category_id], references: [id], onDelete: SetNull)
+  // ── Motor de cálculo ──────────────────────────────────────────────────────
+  // "legacy": usa WindowCalculation (margen/división/descuento) + reglas de
+  //   texto en CatalogoPerfiles — el sistema de siempre, usado por los tipos
+  //   ya existentes. NUNCA se les cambia este valor.
+  // "formula": usa PerfilFormula (cadena de operaciones libre) — el motor
+  //   nuevo, usado por los tipos creados con el configurador paso a paso.
+  // Los dos motores coexisten sin interferirse.
+  calc_engine       String               @default("legacy")
+  perfilFormulas    PerfilFormula[]
   windows           Window[]
   pvcLinks          WindowTypePvcColor[]
   calculation       WindowCalculation?
@@ -338,6 +347,33 @@ model WindowCalculation {
   windowType           WindowType @relation(fields: [window_type_id], references: [id], onDelete: Cascade)
 
   @@map("window_calculations")
+}
+
+// ── Motor de fórmulas nuevo (configurador paso a paso) ──────────────────────
+// Una fila por cada pieza que se corta (marco/hoja/tapajamba/batiente/vidrio)
+// y por cada dimensión (ancho/alto). `steps` guarda la cadena de operaciones
+// en el orden en que el usuario las agregó — sumar/restar/multiplicar/dividir,
+// sin límite de cantidad. Ej: [{"op":"restar","value":1},{"op":"dividir","value":2}]
+// Solo la usan los tipos de ventana con calc_engine = "formula".
+model PerfilFormula {
+  id             Int        @id @default(autoincrement())
+  window_type_id Int
+  windowType     WindowType @relation(fields: [window_type_id], references: [id], onDelete: Cascade)
+
+  // A qué pieza pertenece esta fórmula: 'MARCO' | 'HOJA' | 'TAPAJAMBA' | 'BATIENTE' | 'VIDRIO'
+  slot   String
+  // Sobre qué medida del marco se parte: 'ancho' | 'alto'
+  origen String
+  // Cuántas piezas se cortan con el resultado de esta fórmula (ej. 2 hojas)
+  piezas Int    @default(2)
+  // [{ op: 'sumar'|'restar'|'multiplicar'|'dividir', value: number }, ...]
+  steps  Json
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([window_type_id, slot, origen])
+  @@map("perfil_formulas")
 }
 
 model CatalogoPerfiles {
