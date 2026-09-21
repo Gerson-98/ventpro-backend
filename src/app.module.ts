@@ -35,6 +35,7 @@ import { WindowSeriesModule } from './window-series/window-series.module';
 import { WindowCategoriesModule } from './window-categories/window-categories.module';
 import { PermissionsModule } from './permissions/permissions.module';
 import { PerfilFormulasModule } from './perfil-formulas/perfil-formulas.module';
+import { ProductWizardModule } from './product-wizard/product-wizard.module';
 
 @Module({
   imports: [
@@ -81,6 +82,7 @@ import { PerfilFormulasModule } from './perfil-formulas/perfil-formulas.module';
     WindowCategoriesModule,
     PermissionsModule,
     PerfilFormulasModule,
+    ProductWizardModule,
   ],
   controllers: [AppController, UploadsController],
   providers: [
