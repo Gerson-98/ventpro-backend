@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { Window, Material, AccessoryRule } from '@prisma/client';
 import { CostCalculatorService } from '../cost-calculator/cost-calculator.service';
 import { guillotinePack } from '../common/guillotine-pack';
+import { PerfilFormulasService, SlotMeasurement } from '../perfil-formulas/perfil-formulas.service';
 
 type AccessoryRuleWithMaterial = AccessoryRule & { material: Material };
 
@@ -27,7 +28,23 @@ export class ReportsService {
   constructor(
     private prisma: PrismaService,
     private costCalculator: CostCalculatorService,
+    private perfilFormulas: PerfilFormulasService,
   ) {}
+
+  // Longitudes de una pieza resuelta por el motor de fórmulas, en el mismo
+  // formato {length, dim} que produce getCutsWithDimension para el motor
+  // legado — así el resto del plan de corte no necesita saber cuál motor
+  // calculó la medida.
+  private getCutsFromSlotMeasurement(
+    measurement: SlotMeasurement,
+  ): { length: number; dim: string }[] {
+    const cuts: { length: number; dim: string }[] = [];
+    const a = Number(measurement.ancho.toFixed(1));
+    const h = Number(measurement.alto.toFixed(1));
+    for (let i = 0; i < measurement.piezas; i++) cuts.push({ length: a, dim: 'A' });
+    for (let i = 0; i < measurement.piezas; i++) cuts.push({ length: h, dim: 'H' });
+    return cuts;
+  }
 
   private async enrichWindowMeasures(windows: any[]): Promise<any[]> {
     const allCalcParams = await this.prisma.windowCalculation.findMany();
@@ -35,8 +52,44 @@ export class ReportsService {
       allCalcParams.map((c) => [c.window_type_id, c]),
     );
 
-    return windows.map((window) => {
+    const typeIds = [
+      ...new Set(windows.map((w) => w.window_type_id).filter((id): id is number => !!id)),
+    ];
+    const windowTypes = await this.prisma.windowType.findMany({
+      where: { id: { in: typeIds } },
+      select: { id: true, calc_engine: true },
+    });
+    const engineMap = new Map(windowTypes.map((w) => [w.id, w.calc_engine]));
+
+    return Promise.all(windows.map(async (window) => {
       const options = (window.options as Record<string, string>) || {};
+
+      if (engineMap.get(window.window_type_id) === 'formula') {
+        // ── Motor de fórmulas nuevo (configurador paso a paso) ──────────────
+        const formulaMeasurements = await this.perfilFormulas.resolveMeasurements(
+          window.window_type_id,
+          window.width_cm,
+          window.height_cm,
+        );
+        const hoja = formulaMeasurements['HOJA'] ?? { ancho: window.width_cm, alto: window.height_cm, piezas: 2 };
+        const vidrio = formulaMeasurements['VIDRIO'] ?? hoja;
+
+        return {
+          ...window,
+          hojaAncho: hoja.ancho,
+          hojaAlto: hoja.alto,
+          mosquiteroAncho: vidrio.ancho,
+          mosquiteroAlto: vidrio.alto,
+          vidrioAncho: vidrio.ancho,
+          vidrioAlto: vidrio.alto,
+          // Medidas resueltas de TODOS los perfiles (marco/hoja/tapajamba/
+          // batiente/vidrio) — usadas por el plan de corte para no asumir
+          // que marco/tapajamba son iguales al ancho/alto exterior.
+          formulaMeasurements,
+        };
+      }
+
+      // ── Sistema legado — comportamiento intacto ────────────────────────────
       const calcParams = calcParamsMap.get(window.window_type_id ?? 0);
 
       const { hojaAncho, hojaAlto, vidrioDescuento } =
@@ -59,7 +112,7 @@ export class ReportsService {
         vidrioAncho: mosquiteroAncho,
         vidrioAlto: mosquiteroAlto,
       };
-    });
+    }));
   }
 
   private async processWindowsToReport(windows: any[]) {
@@ -228,12 +281,15 @@ export class ReportsService {
         { barras: number; areaM2: number }
       > = {};
       for (const profile of dynamicProfiles) {
-        if (!profile.incluir || !profile.material || !profile.rule) continue;
-        const cuts = this.getCutsWithDimension(
-          profile.rule,
-          profile.ancho,
-          profile.alto,
-        );
+        if (!profile.incluir || !profile.material) continue;
+        const formulaSlot = window.formulaMeasurements?.[profile.type];
+        let cuts: { length: number; dim: string }[];
+        if (formulaSlot) {
+          cuts = this.getCutsFromSlotMeasurement(formulaSlot);
+        } else {
+          if (!profile.rule) continue;
+          cuts = this.getCutsWithDimension(profile.rule, profile.ancho, profile.alto);
+        }
         const totalLength =
           cuts.reduce((s, c) => s + c.length, 0) * windowQuantity;
         slotMetricsForWindow[profile.type.toLowerCase()] = {
@@ -296,13 +352,16 @@ export class ReportsService {
 
       // 2. PERFILES + REFUERZOS
       for (const profile of dynamicProfiles) {
-        if (!profile.incluir || !profile.material || !profile.rule) continue;
+        if (!profile.incluir || !profile.material) continue;
 
-        const individualCuts = this.getCutsWithDimension(
-          profile.rule,
-          profile.ancho,
-          profile.alto,
-        );
+        const formulaSlot = window.formulaMeasurements?.[profile.type];
+        let individualCuts: { length: number; dim: string }[];
+        if (formulaSlot) {
+          individualCuts = this.getCutsFromSlotMeasurement(formulaSlot);
+        } else {
+          if (!profile.rule) continue;
+          individualCuts = this.getCutsWithDimension(profile.rule, profile.ancho, profile.alto);
+        }
         if (individualCuts.length === 0) continue;
 
         const key = `${window.pvcColor.name}|${profile.material.name}`;
@@ -1221,9 +1280,13 @@ export class ReportsService {
       ]);
 
       const isSliding = this.isSlidingWindowType(window.windowType.name);
+      const formulaSlots: Record<string, SlotMeasurement> | undefined =
+        window.formulaMeasurements;
 
       for (const profile of profiles) {
-        if (!profile.incluir || !profile.material || !profile.rule) continue;
+        if (!profile.incluir || !profile.material) continue;
+        const formulaSlot = formulaSlots?.[profile.type];
+        if (!formulaSlot && !profile.rule) continue;
         if (!CUT_PROFILES_WHITELIST.has(profile.material.name)) continue;
 
         // ── Corredizas: HOJA + MOSQUITERO → serie de máquina ─────────────────
@@ -1233,11 +1296,13 @@ export class ReportsService {
         if (isSliding && profile.type === 'MOSQUITERO') continue;
 
         if (isSliding && profile.type === 'HOJA') {
-          const hojaCutsDim = this.getCutsWithDimension(
-            profile.rule,
-            profile.ancho,
-            profile.alto,
-          );
+          const hojaCutsDim = formulaSlot
+            ? this.getCutsFromSlotMeasurement(formulaSlot)
+            : this.getCutsWithDimension(
+                profile.rule!,
+                profile.ancho,
+                profile.alto,
+              );
           // Cada hoja (y cada mosquitero) = 2 anchos + 2 altos = 4 piezas.
           if (hojaCutsDim.length > 0 && hojaCutsDim.length % 4 === 0) {
             const a = Number(profile.ancho.toFixed(1));
@@ -1254,17 +1319,20 @@ export class ReportsService {
 
             let nMosq = 0;
             let mosqProfileName: string | null = null;
+            const mosqFormulaSlot = formulaSlots?.['MOSQUITERO'];
             if (
               conMosquiteroCut &&
               perfilMosquiteroFinal &&
               CUT_PROFILES_WHITELIST.has(perfilMosquiteroFinal.name) &&
-              reglasCut.regla_mosquitero
+              (mosqFormulaSlot || reglasCut.regla_mosquitero)
             ) {
-              const mosqCutsDim = this.getCutsWithDimension(
-                reglasCut.regla_mosquitero,
-                hojaAncho,
-                hojaAlto,
-              );
+              const mosqCutsDim = mosqFormulaSlot
+                ? this.getCutsFromSlotMeasurement(mosqFormulaSlot)
+                : this.getCutsWithDimension(
+                    reglasCut.regla_mosquitero!,
+                    hojaAncho,
+                    hojaAlto,
+                  );
               if (mosqCutsDim.length > 0 && mosqCutsDim.length % 4 === 0) {
                 nMosq = mosqCutsDim.length / 4;
                 mosqProfileName = perfilMosquiteroFinal.name;
@@ -1314,11 +1382,13 @@ export class ReportsService {
         }
 
         // ── Perfiles individuales (MARCO, BATIENTE, TAPAJAMBA, no corredizas) ─
-        const individualCutsWithDim = this.getCutsWithDimension(
-          profile.rule,
-          profile.ancho,
-          profile.alto,
-        );
+        const individualCutsWithDim = formulaSlot
+          ? this.getCutsFromSlotMeasurement(formulaSlot)
+          : this.getCutsWithDimension(
+              profile.rule!,
+              profile.ancho,
+              profile.alto,
+            );
         if (individualCutsWithDim.length === 0) continue;
 
         const allCuts: LabeledCut[] = [];
