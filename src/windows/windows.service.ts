@@ -5,6 +5,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { normalizeOverrideRules, findOverrideRule } from '../common/override-rules.util';
 
 interface AuthUser {
   id: number;
@@ -328,16 +329,16 @@ export class WindowsService {
     let hojaDivision = calcParams.hojaDivision;
 
     if (options && calcParams.calculationOverrides) {
-      const overrides = calcParams.calculationOverrides as any;
-      const optionKey = Object.keys(options).find(
-        (key) => overrides[options[key]],
+      const rules = normalizeOverrideRules(calcParams.calculationOverrides);
+      const optionKey = Object.keys(options).find((key) =>
+        findOverrideRule(rules, options[key]),
       );
       if (optionKey) {
-        const overrideRules = overrides[options[optionKey]];
-        hojaMargen = overrideRules.hojaMargen ?? hojaMargen;
-        hojaDescuento = overrideRules.hojaDescuento ?? hojaDescuento;
-        vidrioDescuento = overrideRules.vidrioDescuento ?? vidrioDescuento;
-        hojaDivision = overrideRules.hojaDivision ?? hojaDivision;
+        const overrideRule = findOverrideRule(rules, options[optionKey])!;
+        hojaMargen = overrideRule.hojaMargen ?? hojaMargen;
+        hojaDescuento = overrideRule.hojaDescuento ?? hojaDescuento;
+        vidrioDescuento = overrideRule.vidrioDescuento ?? vidrioDescuento;
+        hojaDivision = overrideRule.hojaDivision ?? hojaDivision;
       }
     }
 

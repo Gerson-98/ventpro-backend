@@ -14,6 +14,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { WindowsService } from '../windows/windows.service';
 import { OrderStatus, QuotationStatus } from '@prisma/client';
 import { CostCalculatorService } from '../cost-calculator/cost-calculator.service';
+import { normalizeOverrideRules, findOverrideRule } from '../common/override-rules.util';
 
 interface AuthUser {
   id: number;
@@ -562,16 +563,16 @@ export class QuotationsService {
         let hojaDivision = calcParams.hojaDivision;
 
         if (winOptions && calcParams.calculationOverrides) {
-          const overrides = calcParams.calculationOverrides as any;
-          const optionKey = Object.keys(winOptions).find(
-            (key) => overrides[winOptions[key]],
+          const rules = normalizeOverrideRules(calcParams.calculationOverrides);
+          const optionKey = Object.keys(winOptions).find((key) =>
+            findOverrideRule(rules, winOptions[key]),
           );
           if (optionKey) {
-            const overrideRules = overrides[winOptions[optionKey]];
-            hojaMargen = overrideRules.hojaMargen ?? hojaMargen;
-            hojaDescuento = overrideRules.hojaDescuento ?? hojaDescuento;
-            vidrioDescuento = overrideRules.vidrioDescuento ?? vidrioDescuento;
-            hojaDivision = overrideRules.hojaDivision ?? hojaDivision;
+            const overrideRule = findOverrideRule(rules, winOptions[optionKey])!;
+            hojaMargen = overrideRule.hojaMargen ?? hojaMargen;
+            hojaDescuento = overrideRule.hojaDescuento ?? hojaDescuento;
+            vidrioDescuento = overrideRule.vidrioDescuento ?? vidrioDescuento;
+            hojaDivision = overrideRule.hojaDivision ?? hojaDivision;
           }
         }
 

@@ -4,6 +4,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AppSettingsService } from '../app-settings/app-settings.service';
 import { guillotinePackCount } from '../common/guillotine-pack';
+import { normalizeOverrideRules, findOverrideRule } from '../common/override-rules.util';
 
 interface WindowCostInput {
   window_type_id: number;
@@ -643,7 +644,7 @@ export class CostCalculatorService {
     let vidrioDescuento = calcParams.vidrioDescuento ?? 0;
 
     if (options && calcParams.calculationOverrides) {
-      const overrides = calcParams.calculationOverrides as Record<string, any>;
+      const rules = normalizeOverrideRules(calcParams.calculationOverrides);
       const SKIP_KEYS = new Set([
         'mosquitero',
         'refuerzo_hojas',
@@ -651,12 +652,12 @@ export class CostCalculatorService {
       ]);
       for (const [optionGroup, optionValue] of Object.entries(options)) {
         if (SKIP_KEYS.has(optionGroup)) continue;
-        const override = overrides[optionValue as string];
-        if (override) {
-          hojaMargen = override.hojaMargen ?? hojaMargen;
-          hojaDescuento = override.hojaDescuento ?? hojaDescuento;
-          hojaDivision = override.hojaDivision ?? hojaDivision;
-          vidrioDescuento = override.vidrioDescuento ?? vidrioDescuento;
+        const rule = findOverrideRule(rules, optionValue as string);
+        if (rule) {
+          hojaMargen = rule.hojaMargen ?? hojaMargen;
+          hojaDescuento = rule.hojaDescuento ?? hojaDescuento;
+          hojaDivision = rule.hojaDivision ?? hojaDivision;
+          vidrioDescuento = rule.vidrioDescuento ?? vidrioDescuento;
         }
       }
     }
