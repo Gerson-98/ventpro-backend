@@ -55,10 +55,10 @@ export class ProductWizardService {
   private validateDto(dto: CreateProductWizardDto): string[] {
     const errors: string[] = [];
 
+    // Marco es el único perfil realmente universal — hay productos reales
+    // (marcos fijos, ventanas de sifón) sin Hoja, Tapajamba ni Batiente.
     const marco = dto.perfiles.find((p) => p.slot === 'MARCO');
-    const hoja = dto.perfiles.find((p) => p.slot === 'HOJA');
     if (!marco) errors.push('El perfil de Marco es obligatorio.');
-    if (!hoja) errors.push('El perfil de Hoja es obligatorio.');
 
     const slotsVistos = new Set<string>();
     for (const p of dto.perfiles) {
@@ -105,7 +105,7 @@ export class ProductWizardService {
     }
 
     const marco = dto.perfiles.find((p) => p.slot === 'MARCO')!;
-    const hoja = dto.perfiles.find((p) => p.slot === 'HOJA')!;
+    const hoja = dto.perfiles.find((p) => p.slot === 'HOJA');
     const tapajamba = dto.perfiles.find((p) => p.slot === 'TAPAJAMBA');
     const batiente = dto.perfiles.find((p) => p.slot === 'BATIENTE');
 
@@ -134,7 +134,7 @@ export class ProductWizardService {
           data: {
             window_type_id: windowType.id,
             perfil_marco_id: marco.material_id,
-            perfil_hoja_id: hoja.material_id,
+            perfil_hoja_id: hoja?.material_id ?? null,
             perfil_tapajamba_id: tapajamba?.material_id ?? null,
             perfil_batiente_id: batiente?.material_id ?? null,
             cant_vidrios: dto.vidrio?.usesGlass ? (dto.vidrio.cant_vidrios ?? 1) : null,
@@ -191,7 +191,7 @@ export class ProductWizardService {
     }
 
     const marco = dto.perfiles.find((p) => p.slot === 'MARCO')!;
-    const hoja = dto.perfiles.find((p) => p.slot === 'HOJA')!;
+    const hoja = dto.perfiles.find((p) => p.slot === 'HOJA');
     const tapajamba = dto.perfiles.find((p) => p.slot === 'TAPAJAMBA');
     const batiente = dto.perfiles.find((p) => p.slot === 'BATIENTE');
 
@@ -211,7 +211,7 @@ export class ProductWizardService {
           where: { window_type_id: id },
           update: {
             perfil_marco_id: marco.material_id,
-            perfil_hoja_id: hoja.material_id,
+            perfil_hoja_id: hoja?.material_id ?? null,
             perfil_tapajamba_id: tapajamba?.material_id ?? null,
             perfil_batiente_id: batiente?.material_id ?? null,
             cant_vidrios: dto.vidrio?.usesGlass ? (dto.vidrio.cant_vidrios ?? 1) : null,
@@ -219,7 +219,7 @@ export class ProductWizardService {
           create: {
             window_type_id: id,
             perfil_marco_id: marco.material_id,
-            perfil_hoja_id: hoja.material_id,
+            perfil_hoja_id: hoja?.material_id ?? null,
             perfil_tapajamba_id: tapajamba?.material_id ?? null,
             perfil_batiente_id: batiente?.material_id ?? null,
             cant_vidrios: dto.vidrio?.usesGlass ? (dto.vidrio.cant_vidrios ?? 1) : null,
