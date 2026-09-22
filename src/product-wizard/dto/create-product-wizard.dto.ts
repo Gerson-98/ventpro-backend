@@ -10,6 +10,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Min,
   ValidateNested,
   ArrayMinSize,
 } from 'class-validator';
@@ -29,8 +30,16 @@ export class PerfilInputDto {
   @IsInt()
   material_id: number;
 
+  // Piezas independientes por dimensión: la mayoría de los perfiles cortan
+  // parejo (ej. 2 y 2), pero hay casos reales (Tapajamba típica) que solo se
+  // cortan en un sentido — ahí la otra dimensión va en 0.
   @IsInt()
-  piezas: number;
+  @Min(0)
+  piezasAncho: number;
+
+  @IsInt()
+  @Min(0)
+  piezasAlto: number;
 
   @IsArray()
   @ValidateNested({ each: true })

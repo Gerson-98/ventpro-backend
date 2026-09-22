@@ -40,8 +40,8 @@ export class ProductWizardService {
   private buildFormulaRows(dto: CreateProductWizardDto): FormulaRow[] {
     const rows: FormulaRow[] = [];
     for (const p of dto.perfiles) {
-      rows.push({ slot: p.slot, origen: 'ancho', piezas: p.piezas, steps: p.formulaAncho || [] });
-      rows.push({ slot: p.slot, origen: 'alto', piezas: p.piezas, steps: p.formulaAlto || [] });
+      rows.push({ slot: p.slot, origen: 'ancho', piezas: p.piezasAncho, steps: p.formulaAncho || [] });
+      rows.push({ slot: p.slot, origen: 'alto', piezas: p.piezasAlto, steps: p.formulaAlto || [] });
     }
     if (dto.vidrio?.usesGlass) {
       const cant = dto.vidrio.cant_vidrios ?? 1;
@@ -67,7 +67,9 @@ export class ProductWizardService {
       }
       slotsVistos.add(p.slot);
       if (!p.material_id) errors.push(`Falta seleccionar el perfil para "${p.slot}".`);
-      if (!p.piezas || p.piezas <= 0) errors.push(`"${p.slot}": la cantidad de piezas debe ser mayor a 0.`);
+      if ((p.piezasAncho ?? 0) <= 0 && (p.piezasAlto ?? 0) <= 0) {
+        errors.push(`"${p.slot}": debe tener al menos una pieza de ancho o de alto.`);
+      }
     }
 
     if (dto.vidrio?.usesGlass && (!dto.vidrio.cant_vidrios || dto.vidrio.cant_vidrios <= 0)) {
@@ -331,7 +333,8 @@ export class ProductWizardService {
       return {
         slot,
         material_id: materialId ?? null,
-        piezas: anchoRow?.piezas ?? altoRow?.piezas ?? 2,
+        piezasAncho: anchoRow?.piezas ?? 0,
+        piezasAlto: altoRow?.piezas ?? 0,
         formulaAncho: (anchoRow?.steps as any) ?? [],
         formulaAlto: (altoRow?.steps as any) ?? [],
       };

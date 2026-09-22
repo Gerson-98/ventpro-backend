@@ -93,8 +93,8 @@ export class CostCalculatorService {
   // bin-packing de barras funcione idéntico sin importar el motor.
   private getCutsFromSlotMeasurement(measurement: SlotMeasurement): number[] {
     const cuts: number[] = [];
-    for (let i = 0; i < measurement.piezas; i++) cuts.push(measurement.ancho);
-    for (let i = 0; i < measurement.piezas; i++) cuts.push(measurement.alto);
+    for (let i = 0; i < measurement.piezasAncho; i++) cuts.push(measurement.ancho);
+    for (let i = 0; i < measurement.piezasAlto; i++) cuts.push(measurement.alto);
     return cuts;
   }
 
@@ -273,7 +273,7 @@ export class CostCalculatorService {
     let mosquiteroAlto: number;
 
     if (formulaMeasurements) {
-      const hoja = formulaMeasurements['HOJA'] ?? { ancho: width_cm, alto: height_cm, piezas: 2 };
+      const hoja = formulaMeasurements['HOJA'] ?? { ancho: width_cm, alto: height_cm, piezasAncho: 2, piezasAlto: 2 };
       const vidrio = formulaMeasurements['VIDRIO'] ?? hoja;
       hojaAncho = hoja.ancho;
       hojaAlto = hoja.alto;
@@ -927,7 +927,7 @@ export class CostCalculatorService {
       let mosquiteroAlto: number;
 
       if (formulaMeasurements) {
-        const hoja = formulaMeasurements['HOJA'] ?? { ancho: width_cm, alto: height_cm, piezas: 2 };
+        const hoja = formulaMeasurements['HOJA'] ?? { ancho: width_cm, alto: height_cm, piezasAncho: 2, piezasAlto: 2 };
         const vidrio = formulaMeasurements['VIDRIO'] ?? hoja;
         hojaAncho = hoja.ancho;
         hojaAlto = hoja.alto;
@@ -1181,7 +1181,7 @@ export class CostCalculatorService {
       let vidrioAncho: number;
       let vidrioAlto: number;
       if (formulaMeasurements) {
-        const hoja = formulaMeasurements['HOJA'] ?? { ancho: width_cm, alto: height_cm, piezas: 2 };
+        const hoja = formulaMeasurements['HOJA'] ?? { ancho: width_cm, alto: height_cm, piezasAncho: 2, piezasAlto: 2 };
         const vidrio = formulaMeasurements['VIDRIO'] ?? hoja;
         vidrioAncho = vidrio.ancho;
         vidrioAlto = vidrio.alto;

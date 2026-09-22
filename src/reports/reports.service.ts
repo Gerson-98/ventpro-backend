@@ -41,8 +41,8 @@ export class ReportsService {
     const cuts: { length: number; dim: string }[] = [];
     const a = Number(measurement.ancho.toFixed(1));
     const h = Number(measurement.alto.toFixed(1));
-    for (let i = 0; i < measurement.piezas; i++) cuts.push({ length: a, dim: 'A' });
-    for (let i = 0; i < measurement.piezas; i++) cuts.push({ length: h, dim: 'H' });
+    for (let i = 0; i < measurement.piezasAncho; i++) cuts.push({ length: a, dim: 'A' });
+    for (let i = 0; i < measurement.piezasAlto; i++) cuts.push({ length: h, dim: 'H' });
     return cuts;
   }
 
@@ -71,7 +71,7 @@ export class ReportsService {
           window.width_cm,
           window.height_cm,
         );
-        const hoja = formulaMeasurements['HOJA'] ?? { ancho: window.width_cm, alto: window.height_cm, piezas: 2 };
+        const hoja = formulaMeasurements['HOJA'] ?? { ancho: window.width_cm, alto: window.height_cm, piezasAncho: 2, piezasAlto: 2 };
         const vidrio = formulaMeasurements['VIDRIO'] ?? hoja;
 
         return {

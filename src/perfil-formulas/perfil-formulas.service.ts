@@ -16,7 +16,12 @@ import {
 export interface SlotMeasurement {
   ancho: number;
   alto: number;
-  piezas: number;
+  // Piezas independientes por dimensión — hay perfiles reales (ej. la
+  // Tapajamba de casi toda ventana corrediza) que solo se cortan en un
+  // sentido: "SUMAR ALTO Y *2" no genera NINGÚN corte de ancho. Con un solo
+  // `piezas` simétrico eso era imposible de representar.
+  piezasAncho: number;
+  piezasAlto: number;
 }
 
 const round2 = (n: number) => Number(n.toFixed(2));
@@ -73,8 +78,9 @@ export class PerfilFormulasService {
       const alto = altoRow
         ? evaluateFormula(heightCm, altoRow.steps as FormulaStep[])
         : heightCm;
-      const piezas = anchoRow?.piezas ?? altoRow?.piezas ?? 2;
-      result[slot] = { ancho: round2(ancho), alto: round2(alto), piezas };
+      const piezasAncho = anchoRow?.piezas ?? 0;
+      const piezasAlto = altoRow?.piezas ?? 0;
+      result[slot] = { ancho: round2(ancho), alto: round2(alto), piezasAncho, piezasAlto };
     }
     return result;
   }
@@ -92,8 +98,10 @@ export class PerfilFormulasService {
       if (f.origen !== 'ancho' && f.origen !== 'alto') {
         errors.push(`Fórmula #${i + 1} (${f.slot}): la medida de origen debe ser "ancho" o "alto".`);
       }
-      if (!f.piezas || f.piezas <= 0) {
-        errors.push(`Fórmula #${i + 1} (${f.slot}): la cantidad de piezas debe ser mayor a 0.`);
+      // 0 piezas es válido: significa que este perfil no se corta en este
+      // sentido (ej. Tapajamba "SUMAR ALTO Y *2" no tiene corte de ancho).
+      if (f.piezas == null || f.piezas < 0 || !Number.isInteger(f.piezas)) {
+        errors.push(`Fórmula #${i + 1} (${f.slot}): la cantidad de piezas debe ser un número entero (0 o más).`);
       }
       const stepErrors = validateFormulaSteps(f.steps || []);
       stepErrors.forEach((e) => errors.push(`Fórmula #${i + 1} (${f.slot}): ${e}`));
@@ -101,8 +109,9 @@ export class PerfilFormulasService {
       // Sanity check con una medida de ejemplo: si con una medida típica el
       // resultado ya da cero o negativo, la fórmula está mal armada (ej. restar
       // más de lo que mide la pieza) — mejor avisar ahora que dejar que el
-      // taller reciba una orden de corte con una medida imposible.
-      if (stepErrors.length === 0 && (f.origen === 'ancho' || f.origen === 'alto')) {
+      // taller reciba una orden de corte con una medida imposible. Solo
+      // aplica si este lado realmente produce cortes (piezas > 0).
+      if (stepErrors.length === 0 && f.piezas > 0 && (f.origen === 'ancho' || f.origen === 'alto')) {
         const base = f.origen === 'ancho' ? exampleWidth : exampleHeight;
         try {
           const result = evaluateFormula(base, f.steps || []);
