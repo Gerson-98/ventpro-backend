@@ -23,8 +23,8 @@ export class FormulaStepDto {
 }
 
 export class PerfilInputDto {
-  @IsIn(['MARCO', 'HOJA', 'TAPAJAMBA', 'BATIENTE'])
-  slot: 'MARCO' | 'HOJA' | 'TAPAJAMBA' | 'BATIENTE';
+  @IsIn(['MARCO', 'HOJA', 'TAPAJAMBA', 'BATIENTE', 'MOSQUITERO'])
+  slot: 'MARCO' | 'HOJA' | 'TAPAJAMBA' | 'BATIENTE' | 'MOSQUITERO';
 
   @IsInt()
   material_id: number;
@@ -76,6 +76,18 @@ export class AccesorioInputDto {
   @IsOptional()
   @IsBoolean()
   required?: boolean;
+
+  // Condición: este accesorio solo se agrega si, al cotizar, la opción
+  // `option_group` del cotizador tiene seleccionado el valor `option_key`.
+  // Ambos van juntos (los dos o ninguno) — sin ellos el accesorio es
+  // incondicional. Referencian OptionGroup.key / OptionValue.key.
+  @IsOptional()
+  @IsString()
+  option_group?: string;
+
+  @IsOptional()
+  @IsString()
+  option_key?: string;
 }
 
 export class CreateProductWizardDto {
@@ -115,4 +127,14 @@ export class CreateProductWizardDto {
   @IsArray()
   @IsInt({ each: true })
   pvcColorIds?: number[];
+
+  // Refuerzos: reutilizan las medidas de Hoja/Mosquitero (mismo corte, otro
+  // material) — no llevan fórmula propia.
+  @IsOptional()
+  @IsInt()
+  refuerzoHojaMaterialId?: number;
+
+  @IsOptional()
+  @IsInt()
+  refuerzoMosquiteroMaterialId?: number;
 }

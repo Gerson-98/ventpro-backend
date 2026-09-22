@@ -27,7 +27,7 @@ interface FormulaRow {
   steps: FormulaStep[];
 }
 
-const PERFIL_SLOTS = ['MARCO', 'HOJA', 'TAPAJAMBA', 'BATIENTE'] as const;
+const PERFIL_SLOTS = ['MARCO', 'HOJA', 'TAPAJAMBA', 'BATIENTE', 'MOSQUITERO'] as const;
 
 @Injectable()
 export class ProductWizardService {
@@ -77,6 +77,9 @@ export class ProductWizardService {
     for (const a of dto.accesorios || []) {
       if (!a.material_id) errors.push('Hay un accesorio sin seleccionar.');
       if (!a.quantity || a.quantity <= 0) errors.push('Todo accesorio debe tener una cantidad mayor a 0.');
+      if (!!a.option_group !== !!a.option_key) {
+        errors.push('Un accesorio condicional necesita el grupo de opción y el valor, los dos juntos.');
+      }
     }
 
     // Delega la validación de cada fórmula (pasos bien formados, sin
@@ -108,6 +111,7 @@ export class ProductWizardService {
     const hoja = dto.perfiles.find((p) => p.slot === 'HOJA');
     const tapajamba = dto.perfiles.find((p) => p.slot === 'TAPAJAMBA');
     const batiente = dto.perfiles.find((p) => p.slot === 'BATIENTE');
+    const mosquitero = dto.perfiles.find((p) => p.slot === 'MOSQUITERO');
 
     try {
       return await this.prisma.$transaction(async (tx) => {
@@ -137,6 +141,9 @@ export class ProductWizardService {
             perfil_hoja_id: hoja?.material_id ?? null,
             perfil_tapajamba_id: tapajamba?.material_id ?? null,
             perfil_batiente_id: batiente?.material_id ?? null,
+            perfil_mosquitero_id: mosquitero?.material_id ?? null,
+            refuerzo_hoja_id: dto.refuerzoHojaMaterialId ?? null,
+            refuerzo_mosquitero_id: dto.refuerzoMosquiteroMaterialId ?? null,
             cant_vidrios: dto.vidrio?.usesGlass ? (dto.vidrio.cant_vidrios ?? 1) : null,
           },
         });
@@ -161,6 +168,8 @@ export class ProductWizardService {
               material_id: a.material_id,
               quantity: a.quantity,
               required: a.required ?? true,
+              option_group: a.option_group || null,
+              option_key: a.option_key || null,
             })),
           });
         }
@@ -194,6 +203,7 @@ export class ProductWizardService {
     const hoja = dto.perfiles.find((p) => p.slot === 'HOJA');
     const tapajamba = dto.perfiles.find((p) => p.slot === 'TAPAJAMBA');
     const batiente = dto.perfiles.find((p) => p.slot === 'BATIENTE');
+    const mosquitero = dto.perfiles.find((p) => p.slot === 'MOSQUITERO');
 
     try {
       return await this.prisma.$transaction(async (tx) => {
@@ -214,6 +224,9 @@ export class ProductWizardService {
             perfil_hoja_id: hoja?.material_id ?? null,
             perfil_tapajamba_id: tapajamba?.material_id ?? null,
             perfil_batiente_id: batiente?.material_id ?? null,
+            perfil_mosquitero_id: mosquitero?.material_id ?? null,
+            refuerzo_hoja_id: dto.refuerzoHojaMaterialId ?? null,
+            refuerzo_mosquitero_id: dto.refuerzoMosquiteroMaterialId ?? null,
             cant_vidrios: dto.vidrio?.usesGlass ? (dto.vidrio.cant_vidrios ?? 1) : null,
           },
           create: {
@@ -222,6 +235,9 @@ export class ProductWizardService {
             perfil_hoja_id: hoja?.material_id ?? null,
             perfil_tapajamba_id: tapajamba?.material_id ?? null,
             perfil_batiente_id: batiente?.material_id ?? null,
+            perfil_mosquitero_id: mosquitero?.material_id ?? null,
+            refuerzo_hoja_id: dto.refuerzoHojaMaterialId ?? null,
+            refuerzo_mosquitero_id: dto.refuerzoMosquiteroMaterialId ?? null,
             cant_vidrios: dto.vidrio?.usesGlass ? (dto.vidrio.cant_vidrios ?? 1) : null,
           },
         });
@@ -250,6 +266,8 @@ export class ProductWizardService {
               material_id: a.material_id,
               quantity: a.quantity,
               required: a.required ?? true,
+              option_group: a.option_group || null,
+              option_key: a.option_key || null,
             })),
           });
         }
@@ -302,6 +320,7 @@ export class ProductWizardService {
       HOJA: cat?.perfil_hoja_id,
       TAPAJAMBA: cat?.perfil_tapajamba_id,
       BATIENTE: cat?.perfil_batiente_id,
+      MOSQUITERO: cat?.perfil_mosquitero_id,
     };
 
     const perfiles = PERFIL_SLOTS.map((slot) => {
@@ -341,9 +360,13 @@ export class ProductWizardService {
         materialName: a.material.name,
         quantity: a.quantity,
         required: a.required,
+        option_group: a.option_group ?? undefined,
+        option_key: a.option_key ?? undefined,
       })),
       pvcColorIds: windowType.pvcLinks.map((l) => l.pvcColor_id),
       active: windowType.active,
+      refuerzoHojaMaterialId: cat?.refuerzo_hoja_id ?? undefined,
+      refuerzoMosquiteroMaterialId: cat?.refuerzo_mosquitero_id ?? undefined,
     };
   }
 
@@ -362,7 +385,11 @@ export class ProductWizardService {
         material_id: a.material_id,
         quantity: a.quantity,
         required: a.required,
+        option_group: a.option_group,
+        option_key: a.option_key,
       })),
+      refuerzoHojaMaterialId: source.refuerzoHojaMaterialId,
+      refuerzoMosquiteroMaterialId: source.refuerzoMosquiteroMaterialId,
     };
     return this.createProduct(dto);
   }
