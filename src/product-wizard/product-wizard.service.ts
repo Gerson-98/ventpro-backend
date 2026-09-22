@@ -31,6 +31,8 @@ interface FormulaRow {
 
 const PERFIL_SLOTS = ['MARCO', 'HOJA', 'TAPAJAMBA', 'BATIENTE', 'MOSQUITERO'] as const;
 
+type Tx = Prisma.TransactionClient;
+
 @Injectable()
 export class ProductWizardService {
   constructor(
@@ -141,6 +143,51 @@ export class ProductWizardService {
     return this.perfilFormulas.resolveFromFormulas(formulaRows as any, width, height);
   }
 
+  // ── Autoasigna al tipo de ventana los grupos de opción que sus variantes/
+  // accesorios condicionales referencian, para que el cotizador realmente
+  // los muestre al vendedor. Antes esto requería una pantalla aparte
+  // ("Asignación de Opciones"); ahora queda implícito en el wizard: si una
+  // fórmula o accesorio reacciona a un grupo, ese grupo se ofrece en el
+  // cotizador de este tipo automáticamente. Nunca desasigna — solo agrega
+  // lo que falte, así no rompe asignaciones hechas a mano desde esa pantalla.
+  private async syncOptionGroupAssignments(
+    tx: Tx,
+    windowTypeId: number,
+    dto: CreateProductWizardDto,
+  ) {
+    const keys = new Set<string>();
+    for (const p of dto.perfiles) {
+      for (const v of p.variantes || []) {
+        if (v.option_group) keys.add(v.option_group);
+      }
+    }
+    for (const v of dto.vidrio?.variantes || []) {
+      if (v.option_group) keys.add(v.option_group);
+    }
+    for (const a of dto.accesorios || []) {
+      if (a.option_group) keys.add(a.option_group);
+    }
+    if (keys.size === 0) return;
+
+    const groups = await tx.optionGroup.findMany({
+      where: { key: { in: Array.from(keys) } },
+      select: { id: true },
+    });
+    if (groups.length === 0) return;
+
+    const already = await tx.windowTypeOption.findMany({
+      where: { window_type_id: windowTypeId, group_id: { in: groups.map((g) => g.id) } },
+      select: { group_id: true },
+    });
+    const alreadySet = new Set(already.map((a) => a.group_id));
+    const missing = groups.filter((g) => !alreadySet.has(g.id));
+    if (missing.length === 0) return;
+
+    await tx.windowTypeOption.createMany({
+      data: missing.map((g) => ({ window_type_id: windowTypeId, group_id: g.id })),
+    });
+  }
+
   // ── Crear producto nuevo ───────────────────────────────────────────────────
   async createProduct(dto: CreateProductWizardDto) {
     const errors = this.validateDto(dto);
@@ -219,6 +266,8 @@ export class ProductWizardService {
             })),
           });
         }
+
+        await this.syncOptionGroupAssignments(tx, windowType.id, dto);
 
         return windowType;
       });
@@ -334,6 +383,8 @@ export class ProductWizardService {
             });
           }
         }
+
+        await this.syncOptionGroupAssignments(tx, id, dto);
 
         return windowType;
       });
