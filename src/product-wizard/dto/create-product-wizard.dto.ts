@@ -77,8 +77,11 @@ export class AccesorioInputDto {
   @IsInt()
   material_id: number;
 
+  // Cantidad fija por ventana. Se ignora si se configura una fórmula
+  // (formula_type) — en ese caso la cantidad se calcula sola.
+  @IsOptional()
   @IsInt()
-  quantity: number;
+  quantity?: number;
 
   // Si es false, el accesorio se ofrece como opcional en el cotizador en vez
   // de agregarse siempre con el producto.
@@ -97,6 +100,22 @@ export class AccesorioInputDto {
   @IsOptional()
   @IsString()
   option_key?: string;
+
+  // Cantidad calculada por fórmula en vez de fija: cantidad = ceil(barras o
+  // m² del perfil indicado en formula_slot × formula_factor). Ej: "1 rollo
+  // de felpa por cada 4 barras de Hoja" → PER_BARRA, slot 'hoja', factor 4.
+  // Los tres van juntos — si se define uno, se deben definir los tres.
+  @IsOptional()
+  @IsIn(['PER_BARRA', 'PER_M2'])
+  formula_type?: 'PER_BARRA' | 'PER_M2';
+
+  @IsOptional()
+  @IsIn(['marco', 'hoja', 'mosquitero', 'batiente', 'tapajamba'])
+  formula_slot?: string;
+
+  @IsOptional()
+  @IsNumber()
+  formula_factor?: number;
 }
 
 export class CreateProductWizardDto {

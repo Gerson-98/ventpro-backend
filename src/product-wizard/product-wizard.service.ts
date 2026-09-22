@@ -78,9 +78,15 @@ export class ProductWizardService {
 
     for (const a of dto.accesorios || []) {
       if (!a.material_id) errors.push('Hay un accesorio sin seleccionar.');
-      if (!a.quantity || a.quantity <= 0) errors.push('Todo accesorio debe tener una cantidad mayor a 0.');
       if (!!a.option_group !== !!a.option_key) {
         errors.push('Un accesorio condicional necesita el grupo de opción y el valor, los dos juntos.');
+      }
+      if (a.formula_type || a.formula_slot || a.formula_factor != null) {
+        if (!a.formula_type || !a.formula_slot || !a.formula_factor) {
+          errors.push('Un accesorio con cantidad por fórmula necesita el tipo, el perfil y el factor, los tres juntos.');
+        }
+      } else if (!a.quantity || a.quantity <= 0) {
+        errors.push('Todo accesorio debe tener una cantidad mayor a 0, o una fórmula que la calcule.');
       }
     }
 
@@ -168,10 +174,13 @@ export class ProductWizardService {
             data: dto.accesorios.map((a) => ({
               window_type_id: windowType.id,
               material_id: a.material_id,
-              quantity: a.quantity,
+              quantity: a.formula_type ? 0 : (a.quantity ?? 1),
               required: a.required ?? true,
               option_group: a.option_group || null,
               option_key: a.option_key || null,
+              formula_type: a.formula_type || null,
+              formula_slot: a.formula_slot || null,
+              formula_factor: a.formula_factor ?? null,
             })),
           });
         }
@@ -266,10 +275,13 @@ export class ProductWizardService {
             data: dto.accesorios.map((a) => ({
               window_type_id: id,
               material_id: a.material_id,
-              quantity: a.quantity,
+              quantity: a.formula_type ? 0 : (a.quantity ?? 1),
               required: a.required ?? true,
               option_group: a.option_group || null,
               option_key: a.option_key || null,
+              formula_type: a.formula_type || null,
+              formula_slot: a.formula_slot || null,
+              formula_factor: a.formula_factor ?? null,
             })),
           });
         }
@@ -365,6 +377,9 @@ export class ProductWizardService {
         required: a.required,
         option_group: a.option_group ?? undefined,
         option_key: a.option_key ?? undefined,
+        formula_type: a.formula_type ?? undefined,
+        formula_slot: a.formula_slot ?? undefined,
+        formula_factor: a.formula_factor ?? undefined,
       })),
       pvcColorIds: windowType.pvcLinks.map((l) => l.pvcColor_id),
       active: windowType.active,
@@ -390,7 +405,10 @@ export class ProductWizardService {
         required: a.required,
         option_group: a.option_group,
         option_key: a.option_key,
-      })),
+        formula_type: a.formula_type,
+        formula_slot: a.formula_slot,
+        formula_factor: a.formula_factor,
+      })) as any,
       refuerzoHojaMaterialId: source.refuerzoHojaMaterialId,
       refuerzoMosquiteroMaterialId: source.refuerzoMosquiteroMaterialId,
     };
