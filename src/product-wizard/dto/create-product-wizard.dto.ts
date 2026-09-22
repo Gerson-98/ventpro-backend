@@ -70,6 +70,12 @@ export class AccesorioInputDto {
 
   @IsInt()
   quantity: number;
+
+  // Si es false, el accesorio se ofrece como opcional en el cotizador en vez
+  // de agregarse siempre con el producto.
+  @IsOptional()
+  @IsBoolean()
+  required?: boolean;
 }
 
 export class CreateProductWizardDto {

@@ -83,6 +83,8 @@ export class PerfilFormulasService {
   // guardarlas o de intentar calcular con ellas. No escribe nada en BD.
   validateFormulaSet(
     formulas: { slot: string; origen: string; piezas: number; steps: FormulaStep[] }[],
+    exampleWidth = 100,
+    exampleHeight = 100,
   ): string[] {
     const errors: string[] = [];
     formulas.forEach((f, i) => {
@@ -95,6 +97,24 @@ export class PerfilFormulasService {
       }
       const stepErrors = validateFormulaSteps(f.steps || []);
       stepErrors.forEach((e) => errors.push(`Fórmula #${i + 1} (${f.slot}): ${e}`));
+
+      // Sanity check con una medida de ejemplo: si con una medida típica el
+      // resultado ya da cero o negativo, la fórmula está mal armada (ej. restar
+      // más de lo que mide la pieza) — mejor avisar ahora que dejar que el
+      // taller reciba una orden de corte con una medida imposible.
+      if (stepErrors.length === 0 && (f.origen === 'ancho' || f.origen === 'alto')) {
+        const base = f.origen === 'ancho' ? exampleWidth : exampleHeight;
+        try {
+          const result = evaluateFormula(base, f.steps || []);
+          if (result <= 0) {
+            errors.push(
+              `Fórmula #${i + 1} (${f.slot}): con una medida de ejemplo de ${base} cm da como resultado ${result.toFixed(2)} cm — revisa las operaciones, una pieza no puede medir cero o menos.`,
+            );
+          }
+        } catch {
+          // El error de evaluación (ej. división entre cero) ya lo reportó validateFormulaSteps arriba.
+        }
+      }
     });
     return errors;
   }

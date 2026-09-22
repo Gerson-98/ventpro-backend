@@ -312,6 +312,9 @@ model WindowType {
   //   nuevo, usado por los tipos creados con el configurador paso a paso.
   // Los dos motores coexisten sin interferirse.
   calc_engine       String               @default("legacy")
+  // Permite ocultar el producto de los selectores de cotización sin borrarlo
+  // (conserva el historial de pedidos/cotizaciones que ya lo usan).
+  active            Boolean              @default(true)
   perfilFormulas    PerfilFormula[]
   windows           Window[]
   pvcLinks          WindowTypePvcColor[]
@@ -414,6 +417,10 @@ model AccessoryRule {
   quantity       Int
   option_group   String?
   option_key     String?
+  // Solo lo usa el configurador nuevo (wizard): si es false, el accesorio se
+  // ofrece como opcional en vez de agregarse siempre. El sistema legado no lo
+  // lee — sus AccessoryRule siguen comportándose igual que siempre (true).
+  required       Boolean    @default(true)
 
   // ── Cantidad calculada por fórmula (en vez de fija) ────────────────────────
   // Si formula_type está definido, "quantity" se ignora y la cantidad se

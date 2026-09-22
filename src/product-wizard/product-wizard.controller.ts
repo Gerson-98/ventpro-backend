@@ -35,6 +35,22 @@ export class ProductWizardController {
     return this.service.getProductForEdit(id);
   }
 
+  @Post(':id/duplicate')
+  duplicate(@Param('id', ParseIntPipe) id: number, @Body() body: { name: string }) {
+    if (!body?.name?.trim()) {
+      throw new BadRequestException('Debes indicar el nombre del producto duplicado.');
+    }
+    return this.service.duplicateProduct(id, body.name.trim());
+  }
+
+  @Patch(':id/active')
+  setActive(@Param('id', ParseIntPipe) id: number, @Body() body: { active: boolean }) {
+    if (typeof body?.active !== 'boolean') {
+      throw new BadRequestException('Falta indicar el nuevo estado (activo/inactivo).');
+    }
+    return this.service.setActive(id, body.active);
+  }
+
   // Vista previa en vivo — calcula con el DTO completo aún sin guardar,
   // usando una medida de ejemplo (Paso 5/6 del wizard).
   @Post('preview')

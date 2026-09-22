@@ -160,6 +160,7 @@ export class ProductWizardService {
               window_type_id: windowType.id,
               material_id: a.material_id,
               quantity: a.quantity,
+              required: a.required ?? true,
             })),
           });
         }
@@ -248,6 +249,7 @@ export class ProductWizardService {
               window_type_id: id,
               material_id: a.material_id,
               quantity: a.quantity,
+              required: a.required ?? true,
             })),
           });
         }
@@ -338,8 +340,37 @@ export class ProductWizardService {
         material_id: a.material_id,
         materialName: a.material.name,
         quantity: a.quantity,
+        required: a.required,
       })),
       pvcColorIds: windowType.pvcLinks.map((l) => l.pvcColor_id),
+      active: windowType.active,
     };
+  }
+
+  // ── Duplicar producto — para crear uno parecido sin empezar de cero ───────
+  async duplicateProduct(id: number, newName: string) {
+    const source = await this.getProductForEdit(id);
+    const dto: CreateProductWizardDto = {
+      name: newName,
+      displayName: source.displayName ? `${source.displayName} (copia)` : undefined,
+      series_id: source.series_id ?? undefined,
+      category_id: source.category_id ?? undefined,
+      pvcColorIds: source.pvcColorIds,
+      perfiles: source.perfiles as any,
+      vidrio: source.vidrio as any,
+      accesorios: source.accesorios.map((a) => ({
+        material_id: a.material_id,
+        quantity: a.quantity,
+        required: a.required,
+      })),
+    };
+    return this.createProduct(dto);
+  }
+
+  // ── Activar / desactivar — lo oculta del cotizador sin borrar su historial ─
+  async setActive(id: number, active: boolean) {
+    const existing = await this.prisma.windowType.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundException(`Tipo de ventana #${id} no encontrado.`);
+    return this.prisma.windowType.update({ where: { id }, data: { active } });
   }
 }
