@@ -372,10 +372,23 @@ model PerfilFormula {
   // [{ op: 'sumar'|'restar'|'multiplicar'|'dividir', value: number }, ...]
   steps  Json
 
+  // ── Variante condicional (opcional) ────────────────────────────────────
+  // Si option_group/option_key están definidos, esta fórmula SOLO se usa
+  // cuando la cotización tiene esa opción seleccionada (ej. "cantidad_hojas
+  // = 2" divide distinto que "cantidad_hojas = 1"). Sin ellos, es la fórmula
+  // por defecto (debe existir exactamente una por window_type_id+slot+origen).
+  // Equivalente, para el motor nuevo, a WindowCalculation.calculationOverrides
+  // del sistema legado.
+  option_group String?
+  option_key   String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@unique([window_type_id, slot, origen])
+  // Ya no es único por slot+origen — puede haber una fila "default" (sin
+  // condición) más N variantes condicionales. La unicidad real (una sola
+  // default, condiciones sin repetir) se valida en la capa de aplicación.
+  @@index([window_type_id, slot, origen])
   @@map("perfil_formulas")
 }
 

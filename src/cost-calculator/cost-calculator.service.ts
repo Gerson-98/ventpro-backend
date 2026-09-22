@@ -83,9 +83,10 @@ export class CostCalculatorService {
     calcEngine: string | undefined,
     width: number,
     height: number,
+    options: Record<string, string> = {},
   ): Promise<Record<string, SlotMeasurement> | null> {
     if (calcEngine !== 'formula') return null;
-    return this.perfilFormulas.resolveMeasurements(windowTypeId, width, height);
+    return this.perfilFormulas.resolveMeasurements(windowTypeId, width, height, options);
   }
 
   // Traduce una medida resuelta del motor nuevo al mismo formato de lista de
@@ -265,6 +266,7 @@ export class CostCalculatorService {
       windowType.calc_engine,
       width_cm,
       height_cm,
+      options,
     );
 
     let hojaAncho: number;
@@ -919,6 +921,7 @@ export class CostCalculatorService {
         windowType.calc_engine,
         width_cm,
         height_cm,
+        options,
       );
 
       let hojaAncho: number;
@@ -1176,6 +1179,7 @@ export class CostCalculatorService {
         windowType?.calc_engine,
         width_cm,
         height_cm,
+        options,
       );
 
       let vidrioAncho: number;

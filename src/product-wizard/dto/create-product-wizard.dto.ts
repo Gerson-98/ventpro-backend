@@ -23,6 +23,42 @@ export class FormulaStepDto {
   value: number;
 }
 
+// Variante condicional de una fórmula: reemplaza la fórmula por defecto del
+// perfil/vidrio SOLO cuando la cotización tiene la opción elegida (ej. "con
+// 2 hojas la medida se divide entre 2, con 1 hoja no se divide"). Piezas y
+// fórmulas que no se indiquen aquí conservan el valor del perfil por defecto.
+export class FormulaVariantDto {
+  @IsString()
+  @IsNotEmpty()
+  option_group: string;
+
+  @IsString()
+  @IsNotEmpty()
+  option_key: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  piezasAncho?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  piezasAlto?: number;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => FormulaStepDto)
+  formulaAncho?: FormulaStepDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => FormulaStepDto)
+  formulaAlto?: FormulaStepDto[];
+}
+
 export class PerfilInputDto {
   @IsIn(['MARCO', 'HOJA', 'TAPAJAMBA', 'BATIENTE', 'MOSQUITERO'])
   slot: 'MARCO' | 'HOJA' | 'TAPAJAMBA' | 'BATIENTE' | 'MOSQUITERO';
@@ -50,6 +86,13 @@ export class PerfilInputDto {
   @ValidateNested({ each: true })
   @Type(() => FormulaStepDto)
   formulaAlto: FormulaStepDto[];
+
+  // Variantes condicionales por opción del cotizador (ej. "cantidad_hojas").
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => FormulaVariantDto)
+  variantes?: FormulaVariantDto[];
 }
 
 export class VidrioInputDto {
@@ -71,6 +114,12 @@ export class VidrioInputDto {
   @ValidateNested({ each: true })
   @Type(() => FormulaStepDto)
   formulaAlto?: FormulaStepDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => FormulaVariantDto)
+  variantes?: FormulaVariantDto[];
 }
 
 export class AccesorioInputDto {

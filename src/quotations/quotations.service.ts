@@ -565,6 +565,7 @@ export class QuotationsService {
           win.window_type_id,
           win.width_cm,
           win.height_cm,
+          winOptions,
         );
         const hoja = resolved['HOJA'] ?? { ancho: win.width_cm, alto: win.height_cm, piezas: 2 };
         const vidrio = resolved['VIDRIO'] ?? hoja;

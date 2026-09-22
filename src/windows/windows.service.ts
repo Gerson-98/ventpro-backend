@@ -321,7 +321,7 @@ export class WindowsService {
 
     // ── Motor de fórmulas nuevo (configurador paso a paso) ──────────────────
     if (windowType?.calc_engine === 'formula') {
-      const resolved = await this.perfilFormulas.resolveMeasurements(windowTypeId, width, height);
+      const resolved = await this.perfilFormulas.resolveMeasurements(windowTypeId, width, height, options);
       const hoja = resolved['HOJA'] ?? { ancho: width, alto: height, piezas: 2 };
       const vidrio = resolved['VIDRIO'] ?? hoja;
 

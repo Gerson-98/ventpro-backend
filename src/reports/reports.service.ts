@@ -70,6 +70,7 @@ export class ReportsService {
           window.window_type_id,
           window.width_cm,
           window.height_cm,
+          options,
         );
         const hoja = formulaMeasurements['HOJA'] ?? { ancho: window.width_cm, alto: window.height_cm, piezasAncho: 2, piezasAlto: 2 };
         const vidrio = formulaMeasurements['VIDRIO'] ?? hoja;

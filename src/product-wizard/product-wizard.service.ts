@@ -25,6 +25,8 @@ interface FormulaRow {
   origen: 'ancho' | 'alto';
   piezas: number;
   steps: FormulaStep[];
+  option_group?: string | null;
+  option_key?: string | null;
 }
 
 const PERFIL_SLOTS = ['MARCO', 'HOJA', 'TAPAJAMBA', 'BATIENTE', 'MOSQUITERO'] as const;
@@ -37,16 +39,47 @@ export class ProductWizardService {
   ) {}
 
   // ── Construye las filas de PerfilFormula a partir del DTO del wizard ──────
+  // Cada perfil/vidrio aporta su fila por defecto MÁS una fila por cada
+  // variante condicional (misma piezas/fórmula que el default salvo que la
+  // variante la sobreescriba explícitamente).
   private buildFormulaRows(dto: CreateProductWizardDto): FormulaRow[] {
     const rows: FormulaRow[] = [];
     for (const p of dto.perfiles) {
       rows.push({ slot: p.slot, origen: 'ancho', piezas: p.piezasAncho, steps: p.formulaAncho || [] });
       rows.push({ slot: p.slot, origen: 'alto', piezas: p.piezasAlto, steps: p.formulaAlto || [] });
+      for (const v of p.variantes || []) {
+        rows.push({
+          slot: p.slot, origen: 'ancho',
+          piezas: v.piezasAncho ?? p.piezasAncho,
+          steps: v.formulaAncho ?? p.formulaAncho ?? [],
+          option_group: v.option_group, option_key: v.option_key,
+        });
+        rows.push({
+          slot: p.slot, origen: 'alto',
+          piezas: v.piezasAlto ?? p.piezasAlto,
+          steps: v.formulaAlto ?? p.formulaAlto ?? [],
+          option_group: v.option_group, option_key: v.option_key,
+        });
+      }
     }
     if (dto.vidrio?.usesGlass) {
       const cant = dto.vidrio.cant_vidrios ?? 1;
       rows.push({ slot: 'VIDRIO', origen: 'ancho', piezas: cant, steps: dto.vidrio.formulaAncho || [] });
       rows.push({ slot: 'VIDRIO', origen: 'alto', piezas: cant, steps: dto.vidrio.formulaAlto || [] });
+      for (const v of dto.vidrio.variantes || []) {
+        rows.push({
+          slot: 'VIDRIO', origen: 'ancho',
+          piezas: v.piezasAncho ?? cant,
+          steps: v.formulaAncho ?? dto.vidrio.formulaAncho ?? [],
+          option_group: v.option_group, option_key: v.option_key,
+        });
+        rows.push({
+          slot: 'VIDRIO', origen: 'alto',
+          piezas: v.piezasAlto ?? cant,
+          steps: v.formulaAlto ?? dto.vidrio.formulaAlto ?? [],
+          option_group: v.option_group, option_key: v.option_key,
+        });
+      }
     }
     return rows;
   }
@@ -165,6 +198,8 @@ export class ProductWizardService {
               origen: r.origen,
               piezas: r.piezas,
               steps: r.steps as any,
+              option_group: r.option_group || null,
+              option_key: r.option_key || null,
             })),
           });
         }
@@ -265,6 +300,8 @@ export class ProductWizardService {
               origen: r.origen,
               piezas: r.piezas,
               steps: r.steps as any,
+              option_group: r.option_group || null,
+              option_key: r.option_key || null,
             })),
           });
         }
@@ -337,9 +374,32 @@ export class ProductWizardService {
       MOSQUITERO: cat?.perfil_mosquitero_id,
     };
 
+    // Reconstruye las variantes condicionales de un slot: agrupa las filas
+    // con option_group/option_key (ancho + alto de una misma condición) en
+    // un único objeto { option_group, option_key, piezasAncho, ... }.
+    const buildVariantes = (slot: string) => {
+      const conditional = windowType.perfilFormulas.filter((f) => f.slot === slot && f.option_group);
+      const byCondition = new Map<string, { option_group: string; option_key: string; anchoRow?: any; altoRow?: any }>();
+      for (const f of conditional) {
+        const key = `${f.option_group}=${f.option_key}`;
+        if (!byCondition.has(key)) byCondition.set(key, { option_group: f.option_group!, option_key: f.option_key!, });
+        const entry = byCondition.get(key)!;
+        if (f.origen === 'ancho') entry.anchoRow = f;
+        else entry.altoRow = f;
+      }
+      return Array.from(byCondition.values()).map((v) => ({
+        option_group: v.option_group,
+        option_key: v.option_key,
+        piezasAncho: v.anchoRow?.piezas,
+        piezasAlto: v.altoRow?.piezas,
+        formulaAncho: v.anchoRow?.steps as any,
+        formulaAlto: v.altoRow?.steps as any,
+      }));
+    };
+
     const perfiles = PERFIL_SLOTS.map((slot) => {
-      const anchoRow = windowType.perfilFormulas.find((f) => f.slot === slot && f.origen === 'ancho');
-      const altoRow = windowType.perfilFormulas.find((f) => f.slot === slot && f.origen === 'alto');
+      const anchoRow = windowType.perfilFormulas.find((f) => f.slot === slot && f.origen === 'ancho' && !f.option_group);
+      const altoRow = windowType.perfilFormulas.find((f) => f.slot === slot && f.origen === 'alto' && !f.option_group);
       const materialId = materialIdBySlot[slot];
       if (!materialId && !anchoRow && !altoRow) return null;
       return {
@@ -349,11 +409,13 @@ export class ProductWizardService {
         piezasAlto: altoRow?.piezas ?? 0,
         formulaAncho: (anchoRow?.steps as any) ?? [],
         formulaAlto: (altoRow?.steps as any) ?? [],
+        variantes: buildVariantes(slot),
       };
     }).filter((p): p is NonNullable<typeof p> => p !== null);
 
-    const vidrioAncho = windowType.perfilFormulas.find((f) => f.slot === 'VIDRIO' && f.origen === 'ancho');
-    const vidrioAlto = windowType.perfilFormulas.find((f) => f.slot === 'VIDRIO' && f.origen === 'alto');
+    const vidrioAncho = windowType.perfilFormulas.find((f) => f.slot === 'VIDRIO' && f.origen === 'ancho' && !f.option_group);
+    const vidrioAlto = windowType.perfilFormulas.find((f) => f.slot === 'VIDRIO' && f.origen === 'alto' && !f.option_group);
+    const vidrioVariantes = buildVariantes('VIDRIO');
 
     return {
       id: windowType.id,
@@ -369,6 +431,7 @@ export class ProductWizardService {
         cant_vidrios: cat?.cant_vidrios ?? undefined,
         formulaAncho: (vidrioAncho?.steps as any) ?? [],
         formulaAlto: (vidrioAlto?.steps as any) ?? [],
+        variantes: vidrioVariantes,
       },
       accesorios: windowType.accessoryRules.map((a) => ({
         material_id: a.material_id,
