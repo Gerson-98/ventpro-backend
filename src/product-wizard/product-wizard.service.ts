@@ -166,6 +166,40 @@ export class ProductWizardService {
     }
     const formulaRows = this.buildFormulaRows(expanded);
 
+    // El aviso de "cobertura incompleta" se calcula sobre el DTO ORIGINAL
+    // (antes de expandir option_category a option_key sueltos) — es
+    // justamente la distinción entre "condicioné por categoría completa a
+    // propósito" y "condicioné valor por valor y me olvidé de uno" lo que
+    // delata el patrón del bug real (ver detectIncompleteAccessoryCoverage).
+    const warnings = await this.detectIncompleteAccessoryCoverage(dto);
+
+    // Nombres de material para mostrar en los accesorios por escenario.
+    const materialIds = Array.from(new Set((expanded.accesorios || []).map((a) => a.material_id)));
+    const materials = materialIds.length
+      ? await this.prisma.material.findMany({ where: { id: { in: materialIds } }, select: { id: true, name: true } })
+      : [];
+    const materialNameById = new Map(materials.map((m) => [m.id, m.name]));
+
+    // Misma lógica que calcularAccesorios en cost-calculator.service.ts:
+    // incondicionales SIEMPRE + condicionados cuya condición matchea EXACTO
+    // (option_group/option_key) las opciones activas en ese escenario.
+    const accesoriosFor = (options: Record<string, string>) => {
+      const out: { materialName: string; quantity: number | string; required: boolean }[] = [];
+      for (const a of expanded.accesorios || []) {
+        const esFija = !a.option_group && !a.option_key;
+        const aplicaCondicional =
+          a.option_group && a.option_key && options[a.option_group] === a.option_key;
+        if (!esFija && !aplicaCondicional) continue;
+
+        const materialName = materialNameById.get(a.material_id) ?? `Material #${a.material_id}`;
+        const quantity = a.formula_type
+          ? `${a.formula_factor}× ${a.formula_type === 'PER_M2' ? 'm² de' : 'barras de'} ${a.formula_slot}`
+          : (a.quantity ?? 1);
+        out.push({ materialName, quantity, required: a.required ?? true });
+      }
+      return out;
+    };
+
     // Condiciones a previsualizar: una por cada (option_group, option_key u
     // option_category) distinto que aparezca en el DTO original.
     const conditions = new Map<string, { option_group: string; option_key?: string; option_category?: string }>();
@@ -196,6 +230,7 @@ export class ProductWizardService {
         option_group: null as string | null,
         option_key: null as string | null,
         measurements: this.perfilFormulas.resolveFromFormulas(formulaRows as any, width, height, {}),
+        accesorios: accesoriosFor({}),
       },
     ];
     for (const cond of conditions.values()) {
@@ -210,17 +245,105 @@ export class ProductWizardService {
         label = `${group?.label || cond.option_group} = ${value?.label || cond.option_key}`;
       }
       if (!representativeKey) continue; // categoría sin valores — ya lo reportó validateDto como error
+      const options = { [cond.option_group]: representativeKey };
       scenarios.push({
         label,
         option_group: cond.option_group,
         option_key: representativeKey,
-        measurements: this.perfilFormulas.resolveFromFormulas(formulaRows as any, width, height, {
-          [cond.option_group]: representativeKey,
-        }),
+        measurements: this.perfilFormulas.resolveFromFormulas(formulaRows as any, width, height, options),
+        accesorios: accesoriosFor(options),
       });
     }
 
-    return { measurements: scenarios[0].measurements, scenarios };
+    return { measurements: scenarios[0].measurements, scenarios, warnings };
+  }
+
+  // ── Detecta el patrón del bug de CREMONA: un accesorio condicionado por
+  // VALOR PUNTUAL (option_key) a varios valores de un mismo option_group,
+  // cuyos valores cubiertos son un subconjunto PARCIAL de una categoría real
+  // de ese grupo (OptionValue.category) — ni vacío ni completo. Eso indica
+  // "probablemente se olvidó agregar una fila". Se opera sobre las reglas
+  // TAL COMO llegaron (option_key sueltos, sin expandir categorías) porque
+  // una variante armada a propósito con option_category ya cubre la
+  // categoría completa por construcción y nunca debe generar aviso.
+  private async detectIncompleteAccessoryCoverage(dto: CreateProductWizardDto) {
+    const accesorios = (dto.accesorios || []).filter((a) => a.option_group && a.option_key);
+    if (accesorios.length === 0) return [];
+
+    const groupKeys = Array.from(new Set(accesorios.map((a) => a.option_group!)));
+    const groups = await this.prisma.optionGroup.findMany({
+      where: { key: { in: groupKeys } },
+      include: { values: true },
+    });
+    const groupByKey = new Map(groups.map((g) => [g.key, g]));
+
+    const materialIds = Array.from(new Set(accesorios.map((a) => a.material_id)));
+    const materials = await this.prisma.material.findMany({
+      where: { id: { in: materialIds } },
+      select: { id: true, name: true },
+    });
+    const materialNameById = new Map(materials.map((m) => [m.id, m.name]));
+
+    // option_group -> material_id -> Set(option_key cubiertos)
+    const coverage = new Map<string, Map<number, Set<string>>>();
+    for (const a of accesorios) {
+      const byMaterial = coverage.get(a.option_group!) ?? new Map<number, Set<string>>();
+      coverage.set(a.option_group!, byMaterial);
+      const keys = byMaterial.get(a.material_id) ?? new Set<string>();
+      byMaterial.set(a.material_id, keys);
+      keys.add(a.option_key!);
+    }
+
+    const warnings: {
+      type: 'incomplete_accessory_coverage';
+      material_id: number;
+      materialName: string;
+      option_group: string;
+      groupLabel: string;
+      category: string;
+      coveredKeys: string[];
+      missingKeys: string[];
+      message: string;
+    }[] = [];
+
+    for (const [groupKey, byMaterial] of coverage) {
+      const group = groupByKey.get(groupKey);
+      if (!group) continue;
+
+      const categoriesMap = new Map<string, string[]>(); // category -> [option_key,...]
+      for (const v of group.values) {
+        if (!v.category) continue;
+        const list = categoriesMap.get(v.category) ?? [];
+        categoriesMap.set(v.category, list);
+        list.push(v.key);
+      }
+
+      for (const [materialId, keySet] of byMaterial) {
+        const materialName = materialNameById.get(materialId) ?? `Material #${materialId}`;
+        for (const [category, categoryKeyList] of categoriesMap) {
+          const covered = categoryKeyList.filter((k) => keySet.has(k));
+          if (covered.length === 0 || covered.length === categoryKeyList.length) continue; // vacío o completo: intencional
+
+          const missingKeys = categoryKeyList
+            .filter((k) => !keySet.has(k))
+            .map((k) => group.values.find((v) => v.key === k)?.label ?? k);
+
+          warnings.push({
+            type: 'incomplete_accessory_coverage',
+            material_id: materialId,
+            materialName,
+            option_group: groupKey,
+            groupLabel: group.label,
+            category,
+            coveredKeys: covered,
+            missingKeys,
+            message: `"${materialName}" está condicionado a ${covered.length} de ${categoryKeyList.length} valores de la categoría "${category}" (grupo "${group.label}") — probablemente falte agregarlo también para: ${missingKeys.join(', ')}.`,
+          });
+        }
+      }
+    }
+
+    return warnings;
   }
 
   // ── Expande variantes/accesorios condicionados por "categoría" ────────────
