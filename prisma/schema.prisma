@@ -223,6 +223,14 @@ model OptionValue {
   // (true=siempre con, false=siempre sin) y oculta el toggle libre en el cotizador.
   forces_mosquitero Boolean?
 
+  // Categoría de cálculo: agrupa valores que se comportan igual para la
+  // fórmula/accesorios (ej. 4 tipos de chapa distintos, todos "category =
+  // 1_hoja"). Al armar una variante condicional o un accesorio condicionado
+  // por categoría en vez de por un valor puntual, el asistente expande la
+  // condición a TODOS los valores que compartan esta categoría dentro del
+  // mismo grupo. Texto libre, nullable — no rompe nada si no se usa.
+  category String?
+
   @@unique([group_id, key])
   @@map("option_values")
 }

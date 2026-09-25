@@ -111,9 +111,24 @@ export class ProductWizardService {
       errors.push('Si el producto usa vidrio, la cantidad de vidrios debe ser mayor a 0.');
     }
 
+    for (const p of dto.perfiles) {
+      for (const v of p.variantes || []) {
+        if ((v as any).option_category) {
+          errors.push(`"${p.slot}": la categoría "${(v as any).option_category}" del grupo "${v.option_group}" no tiene ningún valor asignado — etiqueta al menos un valor con esa categoría antes de usarla.`);
+        }
+      }
+    }
+    for (const v of dto.vidrio?.variantes || []) {
+      if ((v as any).option_category) {
+        errors.push(`Vidrio: la categoría "${(v as any).option_category}" del grupo "${v.option_group}" no tiene ningún valor asignado — etiqueta al menos un valor con esa categoría antes de usarla.`);
+      }
+    }
+
     for (const a of dto.accesorios || []) {
       if (!a.material_id) errors.push('Hay un accesorio sin seleccionar.');
-      if (!!a.option_group !== !!a.option_key) {
+      if ((a as any).option_category) {
+        errors.push(`Un accesorio: la categoría "${(a as any).option_category}" del grupo "${a.option_group}" no tiene ningún valor asignado — etiqueta al menos un valor con esa categoría antes de usarla.`);
+      } else if (!!a.option_group !== !!a.option_key) {
         errors.push('Un accesorio condicional necesita el grupo de opción y el valor, los dos juntos.');
       }
       if (a.formula_type || a.formula_slot || a.formula_factor != null) {
@@ -134,13 +149,113 @@ export class ProductWizardService {
   }
 
   // ── Prueba las fórmulas con una medida de ejemplo (Paso 5/6: vista previa) ─
-  previewMeasurements(dto: CreateProductWizardDto, width: number, height: number) {
-    const errors = this.validateDto(dto);
+  // Devuelve un resultado por defecto MÁS uno por cada variante condicional
+  // configurada, cada uno con una etiqueta legible (nombre del grupo =
+  // nombre del valor), para que el wizard muestre "así calcula con esta
+  // opción" separado de "así calcula con esta otra".
+  async previewMeasurements(dto: CreateProductWizardDto, width: number, height: number) {
+    const expanded = await this.expandCategoryVariants(dto);
+    const errors = this.validateDto(expanded);
     if (errors.length > 0) {
       throw new BadRequestException(errors);
     }
-    const formulaRows = this.buildFormulaRows(dto);
-    return this.perfilFormulas.resolveFromFormulas(formulaRows as any, width, height);
+    const formulaRows = this.buildFormulaRows(expanded);
+    const scenarios = this.perfilFormulas.resolveAllScenarios(formulaRows as any, width, height);
+
+    // Reemplaza las etiquetas crudas (key=key) por el nombre legible del
+    // grupo/valor, cuando existan en el catálogo global de opciones.
+    const conditionKeys = scenarios
+      .filter((s) => s.option_group)
+      .map((s) => ({ group: s.option_group as string, key: s.option_key as string }));
+    if (conditionKeys.length > 0) {
+      const groups = await this.prisma.optionGroup.findMany({
+        where: { key: { in: conditionKeys.map((c) => c.group) } },
+        include: { values: true },
+      });
+      const groupByKey = new Map(groups.map((g) => [g.key, g]));
+      for (const s of scenarios) {
+        if (!s.option_group) continue;
+        const group = groupByKey.get(s.option_group);
+        const value = group?.values.find((v) => v.key === s.option_key);
+        if (group || value) {
+          s.label = `${group?.label || s.option_group} = ${value?.label || s.option_key}`;
+        }
+      }
+    }
+
+    return { measurements: scenarios[0].measurements, scenarios };
+  }
+
+  // ── Expande variantes/accesorios condicionados por "categoría" ────────────
+  // Una variante puede apuntar a un valor puntual (option_key, como siempre)
+  // o a una categoría (option_category) que agrupa varios valores del mismo
+  // grupo (ej. 4 tipos de chapa distintos, todos "category=1_hoja" en
+  // OptionValue). Esto arma UNA sola vez el DTO en su forma "expandida":
+  // cada variante/accesorio por categoría se reemplaza por N variantes
+  // idénticas, una por cada option_key real que tenga esa categoría — así
+  // el resto del servicio (buildFormulaRows, validateDto,
+  // syncOptionGroupAssignments) sigue trabajando exactamente igual que
+  // antes, sin enterarse de que existen categorías.
+  private async expandCategoryVariants(
+    dto: CreateProductWizardDto,
+  ): Promise<CreateProductWizardDto> {
+    const pairs = new Set<string>();
+    const collect = (list?: { option_group?: string; option_category?: string }[]) => {
+      for (const v of list || []) {
+        if (v.option_group && v.option_category) pairs.add(`${v.option_group}::${v.option_category}`);
+      }
+    };
+    for (const p of dto.perfiles) collect(p.variantes as any);
+    collect(dto.vidrio?.variantes as any);
+    collect(dto.accesorios as any);
+
+    if (pairs.size === 0) return dto;
+
+    const groupKeys = Array.from(new Set(Array.from(pairs).map((p) => p.split('::')[0])));
+    const groups = await this.prisma.optionGroup.findMany({
+      where: { key: { in: groupKeys } },
+      include: { values: true },
+    });
+    const groupByKey = new Map(groups.map((g) => [g.key, g]));
+
+    // (group_key, category) -> [option_key, option_key, ...]
+    const keysFor = (groupKey: string, category: string): string[] => {
+      const group = groupByKey.get(groupKey);
+      if (!group) return [];
+      return group.values.filter((v) => v.category === category).map((v) => v.key);
+    };
+
+    const expandList = <T extends { option_group?: string; option_key?: string; option_category?: string }>(
+      list: T[] | undefined,
+    ): T[] => {
+      if (!list?.length) return list as T[];
+      const out: T[] = [];
+      for (const item of list) {
+        if (item.option_group && item.option_category) {
+          const keys = keysFor(item.option_group, item.option_category);
+          for (const key of keys) {
+            const { option_category, ...rest } = item as any;
+            out.push({ ...rest, option_key: key });
+          }
+          // Si la categoría no tiene ningún valor asociado (typo, o aún sin
+          // etiquetar), no se descarta en silencio: se deja la fila tal cual
+          // para que validateDto la rechace con un mensaje claro.
+          if (keys.length === 0) out.push(item);
+        } else {
+          out.push(item);
+        }
+      }
+      return out;
+    };
+
+    return {
+      ...dto,
+      perfiles: dto.perfiles.map((p) => ({ ...p, variantes: expandList(p.variantes as any) })) as any,
+      vidrio: dto.vidrio
+        ? ({ ...dto.vidrio, variantes: expandList(dto.vidrio.variantes as any) } as any)
+        : dto.vidrio,
+      accesorios: expandList(dto.accesorios as any),
+    };
   }
 
   // ── Autoasigna al tipo de ventana los grupos de opción que sus variantes/
@@ -189,7 +304,8 @@ export class ProductWizardService {
   }
 
   // ── Crear producto nuevo ───────────────────────────────────────────────────
-  async createProduct(dto: CreateProductWizardDto) {
+  async createProduct(rawDto: CreateProductWizardDto) {
+    const dto = await this.expandCategoryVariants(rawDto);
     const errors = this.validateDto(dto);
     if (errors.length > 0) {
       throw new BadRequestException(errors);
@@ -280,7 +396,7 @@ export class ProductWizardService {
   }
 
   // ── Editar producto existente — SOLO si usa el motor de fórmulas ─────────
-  async updateProduct(id: number, dto: CreateProductWizardDto) {
+  async updateProduct(id: number, rawDto: CreateProductWizardDto) {
     const existing = await this.prisma.windowType.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException(`Tipo de ventana #${id} no encontrado.`);
     if (existing.calc_engine !== 'formula') {
@@ -289,6 +405,7 @@ export class ProductWizardService {
       );
     }
 
+    const dto = await this.expandCategoryVariants(rawDto);
     const errors = this.validateDto(dto);
     if (errors.length > 0) {
       throw new BadRequestException(errors);

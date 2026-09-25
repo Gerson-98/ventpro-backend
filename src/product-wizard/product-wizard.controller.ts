@@ -54,14 +54,13 @@ export class ProductWizardController {
   // Vista previa en vivo — calcula con el DTO completo aún sin guardar,
   // usando una medida de ejemplo (Paso 5/6 del wizard).
   @Post('preview')
-  preview(
+  async preview(
     @Body() body: { dto: CreateProductWizardDto; width: number; height: number },
   ) {
     if (!body?.dto) throw new BadRequestException('Falta la configuración a previsualizar.');
     if (!Number.isFinite(body.width) || !Number.isFinite(body.height)) {
       throw new BadRequestException('Ancho y alto de ejemplo son requeridos.');
     }
-    const measurements = this.service.previewMeasurements(body.dto, body.width, body.height);
-    return { measurements };
+    return this.service.previewMeasurements(body.dto, body.width, body.height);
   }
 }

@@ -105,6 +105,45 @@ export class PerfilFormulasService {
     return result;
   }
 
+  // Vista previa completa: calcula el resultado por defecto MÁS uno por
+  // cada condición distinta (option_group=option_key) presente en el set de
+  // fórmulas, para que el wizard pueda mostrar "así queda con la opción X",
+  // "así queda con la opción Y", etc. — en vez de un solo resultado sin
+  // indicar a qué escenario corresponde.
+  resolveAllScenarios(
+    formulas: FormulaRow[],
+    widthCm: number,
+    heightCm: number,
+  ): { label: string; option_group: string | null; option_key: string | null; measurements: Record<string, SlotMeasurement> }[] {
+    const conditions = new Map<string, { option_group: string; option_key: string }>();
+    for (const f of formulas) {
+      if (f.option_group && f.option_key) {
+        conditions.set(`${f.option_group}=${f.option_key}`, {
+          option_group: f.option_group,
+          option_key: f.option_key,
+        });
+      }
+    }
+
+    const scenarios: { label: string; option_group: string | null; option_key: string | null; measurements: Record<string, SlotMeasurement> }[] = [
+      {
+        label: 'Por defecto (sin ninguna opción condicional seleccionada)',
+        option_group: null,
+        option_key: null,
+        measurements: this.resolveFromFormulas(formulas, widthCm, heightCm, {}),
+      },
+    ];
+    for (const { option_group, option_key } of conditions.values()) {
+      scenarios.push({
+        label: `${option_group} = ${option_key}`,
+        option_group,
+        option_key,
+        measurements: this.resolveFromFormulas(formulas, widthCm, heightCm, { [option_group]: option_key }),
+      });
+    }
+    return scenarios;
+  }
+
   // Valida un conjunto de fórmulas (paso "Validaciones" del wizard) antes de
   // guardarlas o de intentar calcular con ellas. No escribe nada en BD.
   validateFormulaSet(formulas: FormulaRow[], exampleWidth = 100, exampleHeight = 100): string[] {

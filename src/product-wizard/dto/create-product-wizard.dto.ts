@@ -32,9 +32,20 @@ export class FormulaVariantDto {
   @IsNotEmpty()
   option_group: string;
 
+  // Exactamente uno de los dos: option_key ata la variante a UN valor
+  // puntual (ej. "solo_cerrojo"); option_category la ata a TODOS los
+  // valores de ese grupo que compartan esa OptionValue.category (ej.
+  // "1_hoja" agrupa 4 tipos de chapa distintos). Al guardar, el backend
+  // expande option_category a los option_key reales que correspondan.
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
-  option_key: string;
+  option_key?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  option_category?: string;
 
   @IsOptional()
   @IsInt()
@@ -146,9 +157,16 @@ export class AccesorioInputDto {
   @IsString()
   option_group?: string;
 
+  // Exactamente uno de los dos, igual que en FormulaVariantDto: option_key
+  // para un valor puntual, option_category para "cualquier valor de esta
+  // categoría dentro del grupo".
   @IsOptional()
   @IsString()
   option_key?: string;
+
+  @IsOptional()
+  @IsString()
+  option_category?: string;
 
   // Cantidad calculada por fórmula en vez de fija: cantidad = ceil(barras o
   // m² del perfil indicado en formula_slot × formula_factor). Ej: "1 rollo

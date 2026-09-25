@@ -38,4 +38,11 @@ export class CreateOptionValueDto {
   @IsOptional()
   @IsBoolean()
   forces_mosquitero?: boolean | null;
+
+  // ── Categoría de cálculo: agrupa valores que se comportan igual para
+  // fórmulas/accesorios condicionados (ej. varios tipos de chapa, todos
+  // "1_hoja"). Ver comentario en schema.prisma (model OptionValue).
+  @IsOptional()
+  @IsString()
+  category?: string | null;
 }
