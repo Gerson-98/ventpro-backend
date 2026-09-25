@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   ConflictException,
+  BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOptionGroupDto } from './dto/create-option-group.dto';
@@ -70,7 +71,28 @@ export class OptionGroupsService {
   }
 
   async remove(id: number) {
-    await this.findOne(id);
+    const group = await this.findOne(id);
+
+    // WindowTypeOption y OptionValue cascadean al borrar el grupo (se
+    // borrarían en silencio), y PerfilFormula/AccessoryRule referencian el
+    // grupo por su "key" en texto (sin relación de base de datos) — sin este
+    // chequeo, borrar un grupo en uso dejaría condiciones huérfanas o
+    // quitaría la opción de tipos de ventana sin ningún aviso.
+    const tiposUsando = await this.prisma.windowTypeOption.count({ where: { group_id: id } });
+    const formulasUsando = await this.prisma.perfilFormula.count({ where: { option_group: group.key } });
+    const accesoriosUsando = await this.prisma.accessoryRule.count({ where: { option_group: group.key } });
+
+    if (tiposUsando > 0 || formulasUsando > 0 || accesoriosUsando > 0) {
+      const detalles: string[] = [];
+      if (tiposUsando > 0) detalles.push(`se ofrece en ${tiposUsando} tipo(s) de ventana`);
+      if (formulasUsando > 0) detalles.push(`${formulasUsando} fórmula(s) condicional(es) dependen de él`);
+      if (accesoriosUsando > 0) detalles.push(`${accesoriosUsando} accesorio(s) condicionado(s) dependen de él`);
+      throw new BadRequestException(
+        `No se puede eliminar "${group.label}" porque ${detalles.join(', ')}. ` +
+          `Edita esos tipos de ventana desde el asistente y quítale las variantes/accesorios que lo usan antes de eliminarlo.`,
+      );
+    }
+
     return this.prisma.optionGroup.delete({ where: { id } });
   }
 }

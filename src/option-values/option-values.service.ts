@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   ConflictException,
+  BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOptionValueDto } from './dto/create-option-value.dto';
@@ -90,7 +91,29 @@ export class OptionValuesService {
   }
 
   async remove(id: number) {
-    await this.findOne(id);
+    const value = await this.findOne(id);
+
+    // PerfilFormula/AccessoryRule referencian el valor por su "key" en texto
+    // dentro de su grupo — no hay relación de base de datos, así que sin
+    // este chequeo borrar un valor en uso dejaría esa condición huérfana en
+    // silencio (nunca se volvería a disparar, sin ningún aviso).
+    const formulasUsando = await this.prisma.perfilFormula.count({
+      where: { option_group: value.group.key, option_key: value.key },
+    });
+    const accesoriosUsando = await this.prisma.accessoryRule.count({
+      where: { option_group: value.group.key, option_key: value.key },
+    });
+
+    if (formulasUsando > 0 || accesoriosUsando > 0) {
+      const detalles: string[] = [];
+      if (formulasUsando > 0) detalles.push(`${formulasUsando} fórmula(s) condicional(es)`);
+      if (accesoriosUsando > 0) detalles.push(`${accesoriosUsando} accesorio(s) condicionado(s)`);
+      throw new BadRequestException(
+        `No se puede eliminar "${value.label}" porque ${detalles.join(' y ')} dependen de él. ` +
+          `Edita esos tipos de ventana desde el asistente y quítale esa condición antes de eliminarla.`,
+      );
+    }
+
     return this.prisma.optionValue.delete({ where: { id } });
   }
 }

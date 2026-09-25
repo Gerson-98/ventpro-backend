@@ -1,6 +1,6 @@
 // RUTA: src/window-series/window-series.service.ts
 
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
@@ -54,6 +54,20 @@ export class WindowSeriesService {
   }
 
   async remove(id: number) {
+    const series = await this.prisma.windowSeries.findUnique({ where: { id } });
+    if (!series) throw new NotFoundException(`Serie #${id} no encontrada.`);
+
+    // WindowType.series_id no tiene restricción a nivel de base de datos
+    // (SetNull) — sin este chequeo, borrar la serie "desclasificaría" en
+    // silencio todos los tipos de ventana que la usan, sin avisar.
+    const tiposUsando = await this.prisma.windowType.count({ where: { series_id: id } });
+    if (tiposUsando > 0) {
+      throw new BadRequestException(
+        `No se puede eliminar "${series.name}" porque ${tiposUsando} tipo(s) de ventana la usan. ` +
+          `Cámbiales la serie desde el asistente antes de eliminarla.`,
+      );
+    }
+
     try {
       return await this.prisma.windowSeries.delete({ where: { id } });
     } catch (err) {
