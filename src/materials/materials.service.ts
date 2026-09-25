@@ -76,7 +76,7 @@ export class MaterialsService {
       throw new BadRequestException(
         `No se puede eliminar "${material.name}" porque está siendo usado como accesorio en ` +
           `${accessoryRules.length} regla(s) de los siguientes tipos de ventana: ${tiposAfectados}. ` +
-          `Elimine primero esas reglas de accesorios.`,
+          `Edita esos tipos de ventana desde "Nuevo tipo de ventana" (el asistente) y quítale ese accesorio antes de eliminarlo del catálogo.`,
       );
     }
 
@@ -108,7 +108,7 @@ export class MaterialsService {
       throw new BadRequestException(
         `No se puede eliminar "${material.name}" porque está asignado como perfil en ` +
           `los siguientes tipos de ventana: ${tiposAfectados}. ` +
-          `Desasigne el perfil primero antes de eliminar este material.`,
+          `Edita esos tipos de ventana desde "Nuevo tipo de ventana" (el asistente) y cámbiale el perfil antes de eliminarlo del catálogo.`,
       );
     }
 
