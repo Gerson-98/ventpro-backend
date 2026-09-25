@@ -598,9 +598,91 @@ export class ProductWizardService {
       MOSQUITERO: cat?.perfil_mosquitero_id,
     };
 
+    // ── Reagrupa por categoría lo que el wizard expandió a valores puntuales
+    // al guardar. Si un conjunto de filas condicionales (incluyendo alto+
+    // ancho para fórmulas, o material+cantidad para accesorios) coincide
+    // EXACTO con todos los valores que comparten una OptionValue.category
+    // dentro de su grupo, se presenta como UNA sola variante/accesorio por
+    // categoría en vez de una por cada valor — así el wizard se vuelve a ver
+    // compacto al reabrirlo, en vez de mostrar los 9-18 valores sueltos que
+    // realmente hay guardados por detrás.
+    const groupKeysUsed = new Set<string>();
+    for (const f of windowType.perfilFormulas) if (f.option_group) groupKeysUsed.add(f.option_group);
+    for (const a of windowType.accessoryRules) if (a.option_group) groupKeysUsed.add(a.option_group);
+
+    const categoryKeysByGroup = new Map<string, Map<string, Set<string>>>(); // group -> category -> {optionKey,...}
+    if (groupKeysUsed.size > 0) {
+      const groups = await this.prisma.optionGroup.findMany({
+        where: { key: { in: Array.from(groupKeysUsed) } },
+        include: { values: true },
+      });
+      for (const g of groups) {
+        const byCategory = new Map<string, Set<string>>();
+        for (const v of g.values) {
+          if (!v.category) continue;
+          if (!byCategory.has(v.category)) byCategory.set(v.category, new Set());
+          byCategory.get(v.category)!.add(v.key);
+        }
+        categoryKeysByGroup.set(g.key, byCategory);
+      }
+    }
+
+    // Colapsa una lista de entradas condicionales (todas del mismo grupo) por
+    // categoría: para cada categoría del grupo, si TODOS sus valores están
+    // presentes como entradas Y todas comparten la misma "firma" (fórmula,
+    // piezas, cantidad, etc. — lo que decida `signature`), se reemplazan por
+    // una sola entrada de esa categoría. Se prioriza por categorías primero
+    // (no por fórmula idéntica) porque hoy varias categorías pueden compartir
+    // la misma fórmula a propósito (se migraron preservando el valor exacto
+    // que ya tenían) y aun así deben verse como categorías separadas.
+    function collapseByCategory<T extends { option_group?: string; option_key?: string }>(
+      entries: T[],
+      signature: (e: T) => string,
+      buildCategoryEntry: (first: T, category: string) => any,
+      resourceKey: (e: T) => string = () => '',
+    ): any[] {
+      // Primero se separa por "de qué recurso se trata" (ej. material_id en
+      // accesorios) — nunca se colapsan entre sí dos recursos distintos que
+      // por casualidad comparten el mismo grupo de opción (ej. CREMONA no
+      // debe mezclarse con CHAPA CON LLAVE DOBLE solo porque ambos
+      // reaccionan a "tipo_cierre").
+      const byGroup = new Map<string, T[]>();
+      for (const e of entries) {
+        const g = `${e.option_group}::${resourceKey(e)}`;
+        if (!byGroup.has(g)) byGroup.set(g, []);
+        byGroup.get(g)!.push(e);
+      }
+
+      const result: any[] = [];
+      for (const groupEntries of byGroup.values()) {
+        const groupKey = groupEntries[0].option_group!;
+        const byKey = new Map<string, T>();
+        for (const e of groupEntries) byKey.set(e.option_key!, e);
+        const claimed = new Set<string>();
+
+        const byCategory = categoryKeysByGroup.get(groupKey);
+        if (byCategory) {
+          for (const [category, categoryKeys] of byCategory.entries()) {
+            const present = Array.from(categoryKeys).map((k) => byKey.get(k)).filter((e): e is T => !!e);
+            if (present.length !== categoryKeys.size) continue; // no están todos los valores
+            const sig = signature(present[0]);
+            if (!present.every((e) => signature(e) === sig)) continue; // no todos calculan igual
+            result.push(buildCategoryEntry(present[0], category));
+            for (const k of categoryKeys) claimed.add(k);
+          }
+        }
+
+        for (const e of groupEntries) {
+          if (!claimed.has(e.option_key!)) result.push(e);
+        }
+      }
+      return result;
+    }
+
     // Reconstruye las variantes condicionales de un slot: agrupa las filas
     // con option_group/option_key (ancho + alto de una misma condición) en
-    // un único objeto { option_group, option_key, piezasAncho, ... }.
+    // un único objeto { option_group, option_key, piezasAncho, ... }, y
+    // luego intenta colapsar por categoría los grupos de valores idénticos.
     const buildVariantes = (slot: string) => {
       const conditional = windowType.perfilFormulas.filter((f) => f.slot === slot && f.option_group);
       const byCondition = new Map<string, { option_group: string; option_key: string; anchoRow?: any; altoRow?: any }>();
@@ -611,7 +693,7 @@ export class ProductWizardService {
         if (f.origen === 'ancho') entry.anchoRow = f;
         else entry.altoRow = f;
       }
-      return Array.from(byCondition.values()).map((v) => ({
+      const entries = Array.from(byCondition.values()).map((v) => ({
         option_group: v.option_group,
         option_key: v.option_key,
         piezasAncho: v.anchoRow?.piezas,
@@ -619,6 +701,15 @@ export class ProductWizardService {
         formulaAncho: v.anchoRow?.steps as any,
         formulaAlto: v.altoRow?.steps as any,
       }));
+
+      return collapseByCategory(
+        entries,
+        (e) => `${JSON.stringify(e.piezasAncho)}::${JSON.stringify(e.piezasAlto)}::${JSON.stringify(e.formulaAncho)}::${JSON.stringify(e.formulaAlto)}`,
+        (first, category) => {
+          const { option_key, ...rest } = first;
+          return { ...rest, option_category: category };
+        },
+      );
     };
 
     const perfiles = PERFIL_SLOTS.map((slot) => {
@@ -657,17 +748,39 @@ export class ProductWizardService {
         formulaAlto: (vidrioAlto?.steps as any) ?? [],
         variantes: vidrioVariantes,
       },
-      accesorios: windowType.accessoryRules.map((a) => ({
-        material_id: a.material_id,
-        materialName: a.material.name,
-        quantity: a.quantity,
-        required: a.required,
-        option_group: a.option_group ?? undefined,
-        option_key: a.option_key ?? undefined,
-        formula_type: a.formula_type ?? undefined,
-        formula_slot: a.formula_slot ?? undefined,
-        formula_factor: a.formula_factor ?? undefined,
-      })),
+      accesorios: (() => {
+        const rows = windowType.accessoryRules.map((a) => ({
+          material_id: a.material_id,
+          materialName: a.material.name,
+          quantity: a.quantity,
+          required: a.required,
+          option_group: a.option_group ?? undefined,
+          option_key: a.option_key ?? undefined,
+          formula_type: a.formula_type ?? undefined,
+          formula_slot: a.formula_slot ?? undefined,
+          formula_factor: a.formula_factor ?? undefined,
+        }));
+
+        // Igual que con las variantes de fórmula: si varias filas del mismo
+        // material+cantidad cubren EXACTO todos los valores de una
+        // categoría, se presentan como una sola. Nota: distinto material
+        // (ej. cada chapa física) NUNCA colapsa entre sí — solo colapsan
+        // filas que ya comparten material_id (mismo producto físico).
+        const withoutCondition = rows.filter((a) => !a.option_group);
+        const conditional = rows.filter((a) => a.option_group);
+
+        const collapsed = collapseByCategory(
+          conditional,
+          (a) => `${a.quantity}::${a.required}::${a.formula_type}::${a.formula_slot}::${a.formula_factor}`,
+          (first, category) => {
+            const { option_key, ...rest } = first;
+            return { ...rest, option_category: category };
+          },
+          (a) => String(a.material_id),
+        );
+
+        return [...withoutCondition, ...collapsed];
+      })(),
       pvcColorIds: windowType.pvcLinks.map((l) => l.pvcColor_id),
       active: windowType.active,
       refuerzoHojaMaterialId: cat?.refuerzo_hoja_id ?? undefined,
