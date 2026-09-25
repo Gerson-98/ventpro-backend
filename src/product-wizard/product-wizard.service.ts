@@ -150,37 +150,74 @@ export class ProductWizardService {
 
   // ── Prueba las fórmulas con una medida de ejemplo (Paso 5/6: vista previa) ─
   // Devuelve un resultado por defecto MÁS uno por cada variante condicional
-  // configurada, cada uno con una etiqueta legible (nombre del grupo =
-  // nombre del valor), para que el wizard muestre "así calcula con esta
-  // opción" separado de "así calcula con esta otra".
+  // configurada, cada uno con una etiqueta legible. Importante: los
+  // escenarios se arman a partir de las condiciones ORIGINALES del DTO (antes
+  // de expandir categorías) — si una variante usa option_category ("1_hoja"),
+  // se muestra UN bloque para esa categoría, no uno por cada uno de los
+  // valores puntuales en los que se expande por debajo. Para calcular ese
+  // bloque se usa, como representante, el primer valor puntual real que
+  // pertenezca a esa categoría (el resultado es idéntico sin importar cuál
+  // de ellos se use, porque todos comparten la misma fórmula).
   async previewMeasurements(dto: CreateProductWizardDto, width: number, height: number) {
-    const expanded = await this.expandCategoryVariants(dto);
+    const { expanded, categoryKeys } = await this.expandCategoryVariantsWithMap(dto);
     const errors = this.validateDto(expanded);
     if (errors.length > 0) {
       throw new BadRequestException(errors);
     }
     const formulaRows = this.buildFormulaRows(expanded);
-    const scenarios = this.perfilFormulas.resolveAllScenarios(formulaRows as any, width, height);
 
-    // Reemplaza las etiquetas crudas (key=key) por el nombre legible del
-    // grupo/valor, cuando existan en el catálogo global de opciones.
-    const conditionKeys = scenarios
-      .filter((s) => s.option_group)
-      .map((s) => ({ group: s.option_group as string, key: s.option_key as string }));
-    if (conditionKeys.length > 0) {
-      const groups = await this.prisma.optionGroup.findMany({
-        where: { key: { in: conditionKeys.map((c) => c.group) } },
-        include: { values: true },
-      });
-      const groupByKey = new Map(groups.map((g) => [g.key, g]));
-      for (const s of scenarios) {
-        if (!s.option_group) continue;
-        const group = groupByKey.get(s.option_group);
-        const value = group?.values.find((v) => v.key === s.option_key);
-        if (group || value) {
-          s.label = `${group?.label || s.option_group} = ${value?.label || s.option_key}`;
-        }
+    // Condiciones a previsualizar: una por cada (option_group, option_key u
+    // option_category) distinto que aparezca en el DTO original.
+    const conditions = new Map<string, { option_group: string; option_key?: string; option_category?: string }>();
+    const collect = (list?: { option_group?: string; option_key?: string; option_category?: string }[]) => {
+      for (const v of list || []) {
+        if (!v.option_group) continue;
+        const cond = v.option_category
+          ? { option_group: v.option_group, option_category: v.option_category }
+          : { option_group: v.option_group, option_key: v.option_key };
+        const dedupeKey = `${cond.option_group}::${cond.option_key || ''}::${cond.option_category || ''}`;
+        conditions.set(dedupeKey, cond);
       }
+    };
+    for (const p of dto.perfiles) collect(p.variantes as any);
+    collect(dto.vidrio?.variantes as any);
+
+    const groups = conditions.size > 0
+      ? await this.prisma.optionGroup.findMany({
+          where: { key: { in: Array.from(conditions.values()).map((c) => c.option_group) } },
+          include: { values: true },
+        })
+      : [];
+    const groupByKey = new Map(groups.map((g) => [g.key, g]));
+
+    const scenarios = [
+      {
+        label: 'Por defecto (sin ninguna opción condicional seleccionada)',
+        option_group: null as string | null,
+        option_key: null as string | null,
+        measurements: this.perfilFormulas.resolveFromFormulas(formulaRows as any, width, height, {}),
+      },
+    ];
+    for (const cond of conditions.values()) {
+      const group = groupByKey.get(cond.option_group);
+      let representativeKey = cond.option_key;
+      let label: string;
+      if (cond.option_category) {
+        representativeKey = categoryKeys.get(`${cond.option_group}::${cond.option_category}`)?.[0];
+        label = `${group?.label || cond.option_group} · categoría "${cond.option_category}"`;
+      } else {
+        const value = group?.values.find((v) => v.key === cond.option_key);
+        label = `${group?.label || cond.option_group} = ${value?.label || cond.option_key}`;
+      }
+      if (!representativeKey) continue; // categoría sin valores — ya lo reportó validateDto como error
+      scenarios.push({
+        label,
+        option_group: cond.option_group,
+        option_key: representativeKey,
+        measurements: this.perfilFormulas.resolveFromFormulas(formulaRows as any, width, height, {
+          [cond.option_group]: representativeKey,
+        }),
+      });
     }
 
     return { measurements: scenarios[0].measurements, scenarios };
@@ -199,6 +236,16 @@ export class ProductWizardService {
   private async expandCategoryVariants(
     dto: CreateProductWizardDto,
   ): Promise<CreateProductWizardDto> {
+    return (await this.expandCategoryVariantsWithMap(dto)).expanded;
+  }
+
+  // Igual que expandCategoryVariants, pero además devuelve el mapa
+  // (group::category) -> [option_key,...] ya resuelto — lo usa
+  // previewMeasurements para elegir un representante de cada categoría al
+  // armar los escenarios de la vista previa.
+  private async expandCategoryVariantsWithMap(
+    dto: CreateProductWizardDto,
+  ): Promise<{ expanded: CreateProductWizardDto; categoryKeys: Map<string, string[]> }> {
     const pairs = new Set<string>();
     const collect = (list?: { option_group?: string; option_category?: string }[]) => {
       for (const v of list || []) {
@@ -209,7 +256,7 @@ export class ProductWizardService {
     collect(dto.vidrio?.variantes as any);
     collect(dto.accesorios as any);
 
-    if (pairs.size === 0) return dto;
+    if (pairs.size === 0) return { expanded: dto, categoryKeys: new Map() };
 
     const groupKeys = Array.from(new Set(Array.from(pairs).map((p) => p.split('::')[0])));
     const groups = await this.prisma.optionGroup.findMany({
@@ -248,13 +295,22 @@ export class ProductWizardService {
       return out;
     };
 
+    const categoryKeys = new Map<string, string[]>();
+    for (const pair of pairs) {
+      const [groupKey, category] = pair.split('::');
+      categoryKeys.set(pair, keysFor(groupKey, category));
+    }
+
     return {
-      ...dto,
-      perfiles: dto.perfiles.map((p) => ({ ...p, variantes: expandList(p.variantes as any) })) as any,
-      vidrio: dto.vidrio
-        ? ({ ...dto.vidrio, variantes: expandList(dto.vidrio.variantes as any) } as any)
-        : dto.vidrio,
-      accesorios: expandList(dto.accesorios as any),
+      expanded: {
+        ...dto,
+        perfiles: dto.perfiles.map((p) => ({ ...p, variantes: expandList(p.variantes as any) })) as any,
+        vidrio: dto.vidrio
+          ? ({ ...dto.vidrio, variantes: expandList(dto.vidrio.variantes as any) } as any)
+          : dto.vidrio,
+        accesorios: expandList(dto.accesorios as any),
+      },
+      categoryKeys,
     };
   }
 
