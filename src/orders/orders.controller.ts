@@ -122,4 +122,14 @@ export class OrdersController {
   ) {
     return this.ordersService.swapMarcoSize(id, body.marcoSize, req.user);
   }
+
+  @Patch(':id/windows/:windowId/marco-size')
+  swapWindowMarcoSize(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('windowId', ParseIntPipe) windowId: number,
+    @Body() body: { marcoSize: '4.5' | '5.0' },
+    @Request() req,
+  ) {
+    return this.ordersService.swapWindowMarcoSize(id, windowId, body.marcoSize, req.user);
+  }
 }

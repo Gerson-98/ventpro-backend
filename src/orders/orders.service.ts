@@ -522,10 +522,59 @@ export class OrdersService {
     });
   }
 
+  // ─── resolveMarcoSwap ─────────────────────────────────────────────────────
+  // Dada una ventana y el tamaño de marco deseado, calcula a qué WindowType
+  // debe pasar (su variante "MARCO 45 CM" / "MARCO 5 CM" equivalente) y sus
+  // medidas de hoja recalculadas. Devuelve null si la ventana no tiene
+  // variante de marco (abatibles, fijos, etc.) o ya está en el tamaño pedido.
+  // Compartido por el swap de UNA ventana y el swap de TODO el pedido.
+  private async resolveMarcoSwap(
+    win: { id: number; windowType: { name: string } | null; options: unknown; width_cm: unknown; height_cm: unknown },
+    marcoSize: '4.5' | '5.0',
+  ) {
+    const typeName: string = win.windowType?.name ?? '';
+    const hasMarco45 = typeName.includes('MARCO 45 CM');
+    const hasMarco5 = typeName.includes('MARCO 5 CM');
+
+    if (!hasMarco45 && !hasMarco5) return null; // sin variante de marco
+    if (marcoSize === '4.5' && hasMarco45) return null; // ya está en el tamaño pedido
+    if (marcoSize === '5.0' && hasMarco5) return null;
+
+    const targetName =
+      marcoSize === '5.0'
+        ? typeName.replace('MARCO 45 CM', 'MARCO 5 CM')
+        : typeName.replace('MARCO 5 CM', 'MARCO 45 CM');
+
+    const targetType = await this.prisma.windowType.findFirst({
+      where: { name: targetName },
+      include: { calculation: true },
+    });
+    if (!targetType) return null; // no existe equivalente en BD
+
+    const options = (win.options as Record<string, string>) ?? {};
+    const { hojaAncho, hojaAlto, vidrioDescuento } =
+      this.costCalculator.calcularMedidasHoja(
+        Number(win.width_cm),
+        Number(win.height_cm),
+        targetType.calculation,
+        options,
+      );
+
+    return {
+      window_type_id: targetType.id,
+      hojaAncho,
+      hojaAlto,
+      vidrioAncho: Number((hojaAncho - vidrioDescuento).toFixed(2)),
+      vidrioAlto: Number((hojaAlto - vidrioDescuento).toFixed(2)),
+    };
+  }
+
   // ─── swapMarcoSize ────────────────────────────────────────────────────────
-  // Intercambia el window_type_id de cada ventana corrediza entre su variante
-  // "MARCO 45 CM" y "MARCO 5 CM", y recalcula únicamente las medidas de hoja
-  // (hojaAncho, hojaAlto, vidrioAncho, vidrioAlto). El precio no se toca.
+  // Intercambia el window_type_id de CADA ventana corrediza del pedido entre
+  // su variante "MARCO 45 CM" y "MARCO 5 CM", y recalcula únicamente las
+  // medidas de hoja. El precio no se toca. Afecta a TODO el pedido a la vez
+  // — para cambiar solo una ventana (ej. al pasarla a un color que solo
+  // existe en la otra serie) usa swapWindowMarcoSize.
   async swapMarcoSize(
     orderId: number,
     marcoSize: '4.5' | '5.0',
@@ -548,58 +597,43 @@ export class OrdersService {
     const windowUpdates: Promise<any>[] = [];
 
     for (const win of order.windows) {
-      const typeName: string = win.windowType?.name ?? '';
-      const hasMarco45 = typeName.includes('MARCO 45 CM');
-      const hasMarco5 = typeName.includes('MARCO 5 CM');
-
-      // Ventanas sin variante de marco (abatibles, fijos, etc.) → ignorar
-      if (!hasMarco45 && !hasMarco5) continue;
-
-      // Ya está en el tamaño solicitado → ignorar
-      if (marcoSize === '4.5' && hasMarco45) continue;
-      if (marcoSize === '5.0' && hasMarco5) continue;
-
-      // Nombre del tipo destino
-      const targetName =
-        marcoSize === '5.0'
-          ? typeName.replace('MARCO 45 CM', 'MARCO 5 CM')
-          : typeName.replace('MARCO 5 CM', 'MARCO 45 CM');
-
-      const targetType = await this.prisma.windowType.findFirst({
-        where: { name: targetName },
-        include: { calculation: true },
-      });
-
-      // No existe equivalente en BD → saltar silenciosamente
-      if (!targetType) continue;
-
-      const options = (win.options as Record<string, string>) ?? {};
-      const { hojaAncho, hojaAlto, vidrioDescuento } =
-        this.costCalculator.calcularMedidasHoja(
-          Number(win.width_cm),
-          Number(win.height_cm),
-          targetType.calculation,
-          options,
-        );
-      const vidrioAncho = Number((hojaAncho - vidrioDescuento).toFixed(2));
-      const vidrioAlto = Number((hojaAlto - vidrioDescuento).toFixed(2));
-
+      const data = await this.resolveMarcoSwap(win, marcoSize);
+      if (!data) continue;
       windowUpdates.push(
-        this.prisma.window.update({
-          where: { id: win.id },
-          data: {
-            window_type_id: targetType.id,
-            hojaAncho,
-            hojaAlto,
-            vidrioAncho,
-            vidrioAlto,
-          },
-        }),
+        this.prisma.window.update({ where: { id: win.id }, data }),
       );
     }
 
     await Promise.all(windowUpdates);
     return { updated: windowUpdates.length };
+  }
+
+  // ─── swapWindowMarcoSize ──────────────────────────────────────────────────
+  // Igual que swapMarcoSize, pero solo para UNA ventana puntual del pedido —
+  // para cuando se cambia el color de una sola ventana a uno que solo existe
+  // en la otra serie (ej. imitación madera → Serie 60 / Marco 5cm), sin tocar
+  // el resto de las ventanas del pedido que ya estaban correctas.
+  async swapWindowMarcoSize(
+    orderId: number,
+    windowId: number,
+    marcoSize: '4.5' | '5.0',
+    user: AuthUser,
+  ): Promise<{ updated: number }> {
+    await this.assertOwnership(orderId, user);
+
+    const win = await this.prisma.window.findUnique({
+      where: { id: windowId },
+      include: { windowType: { include: { calculation: true } } },
+    });
+    if (!win || win.order_id !== orderId) {
+      throw new NotFoundException(`Ventana #${windowId} no encontrada en este pedido.`);
+    }
+
+    const data = await this.resolveMarcoSwap(win, marcoSize);
+    if (!data) return { updated: 0 };
+
+    await this.prisma.window.update({ where: { id: windowId }, data });
+    return { updated: 1 };
   }
 
   // ─── updateStatus ─────────────────────────────────────────────────────────
