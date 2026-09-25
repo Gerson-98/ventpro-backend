@@ -296,13 +296,10 @@ export class ProductWizardService {
 
     const warnings: {
       type: 'incomplete_accessory_coverage';
-      material_id: number;
-      materialName: string;
       option_group: string;
       groupLabel: string;
       category: string;
-      coveredKeys: string[];
-      missingKeys: string[];
+      materials: { material_id: number; materialName: string; coveredKeys: string[]; missingKeys: string[] }[];
       message: string;
     }[] = [];
 
@@ -318,28 +315,49 @@ export class ProductWizardService {
         list.push(v.key);
       }
 
-      for (const [materialId, keySet] of byMaterial) {
-        const materialName = materialNameById.get(materialId) ?? `Material #${materialId}`;
-        for (const [category, categoryKeyList] of categoriesMap) {
+      // Por categoría, junta TODOS los materiales con cobertura parcial en
+      // una sola entrada — en vez de una alerta suelta por cada material
+      // (con 4-6 chapas distintas eso eran 4-6 mensajes casi idénticos, cada
+      // uno sugiriendo por error "agrégale también los valores de las OTRAS
+      // chapas", que no tiene sentido: cada chapa es un producto físico
+      // aparte, no algo que deba cubrir toda la categoría por sí sola).
+      for (const [category, categoryKeyList] of categoriesMap) {
+        const partial: { material_id: number; materialName: string; coveredKeys: string[]; missingKeys: string[] }[] = [];
+
+        for (const [materialId, keySet] of byMaterial) {
           const covered = categoryKeyList.filter((k) => keySet.has(k));
           if (covered.length === 0 || covered.length === categoryKeyList.length) continue; // vacío o completo: intencional
 
+          const materialName = materialNameById.get(materialId) ?? `Material #${materialId}`;
           const missingKeys = categoryKeyList
             .filter((k) => !keySet.has(k))
             .map((k) => group.values.find((v) => v.key === k)?.label ?? k);
 
-          warnings.push({
-            type: 'incomplete_accessory_coverage',
-            material_id: materialId,
-            materialName,
-            option_group: groupKey,
-            groupLabel: group.label,
-            category,
-            coveredKeys: covered,
-            missingKeys,
-            message: `"${materialName}" está condicionado a ${covered.length} de ${categoryKeyList.length} valores de la categoría "${category}" (grupo "${group.label}") — probablemente falte agregarlo también para: ${missingKeys.join(', ')}.`,
-          });
+          partial.push({ material_id: materialId, materialName, coveredKeys: covered, missingKeys });
         }
+
+        if (partial.length === 0) continue;
+
+        // Si, entre TODOS los materiales con cobertura parcial de esta
+        // categoría, el conjunto combinado ya cubre los valores completos,
+        // es casi siempre el patrón normal: varios productos distintos
+        // dividiéndose la categoría (ej. una chapa por cada combinación).
+        const unionCovered = new Set(partial.flatMap((p) => p.coveredKeys));
+        const unionComplete = categoryKeyList.every((k) => unionCovered.has(k));
+
+        const names = partial.map((p) => p.materialName).join(', ');
+        const message = unionComplete
+          ? `${partial.length} accesorio(s) del grupo "${group.label}" (${names}) cubren, cada uno, solo parte de la categoría "${category}" — pero entre todos cubren el grupo completo. Es el patrón normal cuando cada uno es un producto físico distinto (ej. una chapa distinta por combinación). Revísalo solo si esperabas que alguno aplicara a más casos.`
+          : `${partial.length} accesorio(s) del grupo "${group.label}" (${names}) cubren solo parte de la categoría "${category}", y entre todos igual queda ${Array.from(new Set(categoryKeyList.filter((k) => !unionCovered.has(k)).map((k) => group.values.find((v) => v.key === k)?.label ?? k))).join(', ')} sin ningún accesorio asociado. Puede ser un olvido — revísalo.`;
+
+        warnings.push({
+          type: 'incomplete_accessory_coverage',
+          option_group: groupKey,
+          groupLabel: group.label,
+          category,
+          materials: partial,
+          message,
+        });
       }
     }
 
