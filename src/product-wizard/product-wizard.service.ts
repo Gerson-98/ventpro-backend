@@ -340,15 +340,16 @@ export class ProductWizardService {
 
         // Si, entre TODOS los materiales con cobertura parcial de esta
         // categoría, el conjunto combinado ya cubre los valores completos,
-        // es casi siempre el patrón normal: varios productos distintos
-        // dividiéndose la categoría (ej. una chapa por cada combinación).
+        // es el patrón normal (varios productos distintos dividiéndose la
+        // categoría, ej. una chapa por cada combinación) — no se avisa nada,
+        // ese caso resultó ser ruido puro sin valor práctico para el admin.
+        // Solo se avisa cuando de verdad queda un valor sin NINGÚN accesorio.
         const unionCovered = new Set(partial.flatMap((p) => p.coveredKeys));
         const unionComplete = categoryKeyList.every((k) => unionCovered.has(k));
+        if (unionComplete) continue;
 
         const names = partial.map((p) => p.materialName).join(', ');
-        const message = unionComplete
-          ? `${partial.length} accesorio(s) del grupo "${group.label}" (${names}) cubren, cada uno, solo parte de la categoría "${category}" — pero entre todos cubren el grupo completo. Es el patrón normal cuando cada uno es un producto físico distinto (ej. una chapa distinta por combinación). Revísalo solo si esperabas que alguno aplicara a más casos.`
-          : `${partial.length} accesorio(s) del grupo "${group.label}" (${names}) cubren solo parte de la categoría "${category}", y entre todos igual queda ${Array.from(new Set(categoryKeyList.filter((k) => !unionCovered.has(k)).map((k) => group.values.find((v) => v.key === k)?.label ?? k))).join(', ')} sin ningún accesorio asociado. Puede ser un olvido — revísalo.`;
+        const message = `${partial.length} accesorio(s) del grupo "${group.label}" (${names}) cubren solo parte de la categoría "${category}", y entre todos igual queda ${Array.from(new Set(categoryKeyList.filter((k) => !unionCovered.has(k)).map((k) => group.values.find((v) => v.key === k)?.label ?? k))).join(', ')} sin ningún accesorio asociado. Puede ser un olvido — revísalo.`;
 
         warnings.push({
           type: 'incomplete_accessory_coverage',
