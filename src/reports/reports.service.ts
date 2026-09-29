@@ -1260,27 +1260,25 @@ export class ReportsService {
         },
       ];
 
-      const CUT_PROFILES_WHITELIST = new Set([
-        'HOJA ABATIBLE ADENTRO',
-        'HOJA ABATIBLE AFUERA',
-        'HOJA ANDINA',
-        'HOJA CEDAZO',
-        'HOJA CORREDIZA S60 5,5 CM',
-        'HOJA CORREDIZA S60 6,6 CM',
-        'HOJA DE LUJO ADENTRO',
-        'HOJA DE LUJO AFUERA',
-        'HOJA PROYECTABLE',
-        'MARCO CORREDIZO S80 4,5 CM',
-        'MARCO CORREDIZO S80 5 CM',
-        'MARCO FIJO S60',
-        'MARCO FIJO S80',
-        // ── Refuerzos también entran al plan de corte ────────────────────────
-        'REFUERZO HOJA 5,5 CM',
-        'REFUERZO HOJA 6,6 CM',
-        'REFUERZO CEDAZO',
-      ]);
+      // Antes había una lista de nombres de perfiles a mano (hardcodeada) que
+      // excluía en silencio cualquier perfil nuevo no agregado ahí — se
+      // rompía cada vez que se creaba un tipo de ventana nuevo (ej. el marco
+      // de "PUERTA DE DUCHA 2 CARRILES S60" no aparecía en el plan de corte
+      // aunque el reporte de perfiles y el costo ya lo calculaban bien).
+      // Un perfil que se corta en el taller SIEMPRE es Material.type=PERFIL
+      // — es la señal real que ya existe en el catálogo, no hace falta
+      // mantener una lista de nombres aparte.
+      const esPerfilRecortable = (material: { type?: string } | null | undefined) =>
+        material?.type === 'PERFIL';
 
-      const isSliding = this.isSlidingWindowType(window.windowType.name);
+      // Antes solo miraba el nombre INTERNO — un tipo nuevo cuyo nombre
+      // interno no dijera literalmente "CORREDIZA" (ej. "PUERTA DE DUCHA 2
+      // CARRILES S60", con "corrediza" solo en el nombre comercial) caía al
+      // camino no-corrediza y cortaba cada hoja como pieza suelta en vez de
+      // juntar las 2 hojas en una sola serie de máquina.
+      const isSliding = this.isSlidingWindowType(
+        `${window.windowType.name} ${window.windowType.displayName ?? ''}`,
+      );
       const formulaSlots: Record<string, SlotMeasurement> | undefined =
         window.formulaMeasurements;
 
@@ -1288,7 +1286,7 @@ export class ReportsService {
         if (!profile.incluir || !profile.material) continue;
         const formulaSlot = formulaSlots?.[profile.type];
         if (!formulaSlot && !profile.rule) continue;
-        if (!CUT_PROFILES_WHITELIST.has(profile.material.name)) continue;
+        if (!esPerfilRecortable(profile.material)) continue;
 
         // ── Corredizas: HOJA + MOSQUITERO → serie de máquina ─────────────────
         //   La máquina corta barras idénticas al mismo tiempo: 2 hojas + 1
@@ -1324,7 +1322,7 @@ export class ReportsService {
             if (
               conMosquiteroCut &&
               perfilMosquiteroFinal &&
-              CUT_PROFILES_WHITELIST.has(perfilMosquiteroFinal.name) &&
+              esPerfilRecortable(perfilMosquiteroFinal) &&
               (mosqFormulaSlot || reglasCut.regla_mosquitero)
             ) {
               const mosqCutsDim = mosqFormulaSlot
