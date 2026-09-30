@@ -2,12 +2,9 @@
 
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { Window, Material, AccessoryRule } from '@prisma/client';
 import { CostCalculatorService } from '../cost-calculator/cost-calculator.service';
 import { guillotinePack } from '../common/guillotine-pack';
 import { PerfilFormulasService, SlotMeasurement } from '../perfil-formulas/perfil-formulas.service';
-
-type AccessoryRuleWithMaterial = AccessoryRule & { material: Material };
 
 // ── Movido al scope de archivo para que todos los métodos lo reconozcan ──────
 type LabeledCut = { length: number; windowLabel: string };
@@ -116,439 +113,32 @@ export class ReportsService {
     }));
   }
 
-  private async processWindowsToReport(windows: any[]) {
-    const enrichedWindows = await this.enrichWindowMeasures(windows);
-
-    const allMaterials = await this.prisma.material.findMany();
-    const materialsMap = new Map(allMaterials.map((m) => [m.name, m]));
-    const materialsById = new Map(allMaterials.map((m) => [m.id, m]));
-
-    const catalogMap = new Map(
-      (
-        await this.prisma.catalogoPerfiles.findMany({
-          include: {
-            perfilMarco: true,
-            perfilHoja: true,
-            perfilMosquitero: true,
-            perfilBatiente: true,
-            perfilTapajamba: true,
-            // ── NUEVOS ──────────────────────────────────────────────────────
-            refuerzoHoja: true,
-            refuerzoMosquitero: true,
-          },
-        })
-      ).map((p) => [p.window_type_id, p]),
-    );
-
-    const accessoryRules: AccessoryRuleWithMaterial[] =
-      await this.prisma.accessoryRule.findMany({ include: { material: true } });
-
-    const rulesByWindowType = new Map<number, AccessoryRuleWithMaterial[]>();
-    accessoryRules.forEach((rule) => {
-      if (!rulesByWindowType.has(rule.window_type_id))
-        rulesByWindowType.set(rule.window_type_id, []);
-      rulesByWindowType.get(rule.window_type_id)!.push(rule);
-    });
-
-    interface ProfileAccum {
-      material: any;
-      pvcColor: string;
-      cuts: number[];
-      totalLength: number;
-      isDuela: boolean;
-    }
-    const profilesReportMap = new Map<string, ProfileAccum>();
-    const accessoriesReportMap = new Map<string, any>();
-    // glassReportMap ahora guarda piezas individuales para usar guillotinePack
-    const glassReportMap = new Map<
-      string,
-      {
-        material: any;
-        sheetWidth: number;
-        sheetHeight: number;
-        pieces: { width: number; height: number; label: string }[];
-      }
-    >();
-
-    const BAR_LENGTH_REPORT = 580;
-
-    for (const window of enrichedWindows) {
-      if (!window || !window.windowType || !window.pvcColor) continue;
-
-      const catalogEntry = catalogMap.get(window.window_type_id);
-      if (!catalogEntry) continue;
-
-      const windowQuantity = window.quantity || 1;
-      const options = (window.options as any) || {};
-
-      // ── Mosquitero y refuerzo ────────────────────────────────────────────
-      const conMosquitero = this.costCalculator.tieneMosquitero(
-        options,
-        catalogEntry,
-      );
-      const conRefuerzoHojas = this.costCalculator.tieneRefuerzoHojas(options);
-      const conRefuerzoMosquitero =
-        this.costCalculator.tieneRefuerzoMosquitero(options);
-
-      const hojaAncho = window.hojaAncho ?? window.width_cm;
-      const hojaAlto = window.hojaAlto ?? window.height_cm;
-      const mosquiteroAncho = window.mosquiteroAncho ?? hojaAncho;
-      const mosquiteroAlto = window.mosquiteroAlto ?? hojaAlto;
-      const vidrioAncho = window.vidrioAncho ?? hojaAncho;
-      const vidrioAlto = window.vidrioAlto ?? hojaAlto;
-
-      const reglas = this.costCalculator.aplicarRuleOverrides(
-        catalogEntry,
-        options,
-        window.glassColor?.name,
-      );
-
-      const perfilMarcoFinal =
-        reglas.perfil_marco_id !== null
-          ? (materialsById.get(reglas.perfil_marco_id) ??
-            catalogEntry.perfilMarco)
-          : catalogEntry.perfilMarco;
-      const perfilHojaFinal =
-        reglas.perfil_hoja_id !== null
-          ? (materialsById.get(reglas.perfil_hoja_id) ??
-            catalogEntry.perfilHoja)
-          : catalogEntry.perfilHoja;
-      const perfilMosquiteroFinal =
-        reglas.perfil_mosquitero_id !== null
-          ? (materialsById.get(reglas.perfil_mosquitero_id) ??
-            catalogEntry.perfilMosquitero)
-          : catalogEntry.perfilMosquitero;
-      const perfilBatienteFinal =
-        reglas.perfil_batiente_id !== null
-          ? (materialsById.get(reglas.perfil_batiente_id) ??
-            catalogEntry.perfilBatiente)
-          : catalogEntry.perfilBatiente;
-      const perfilTapajambaFinal =
-        reglas.perfil_tapajamba_id !== null
-          ? (materialsById.get(reglas.perfil_tapajamba_id) ??
-            catalogEntry.perfilTapajamba)
-          : catalogEntry.perfilTapajamba;
-
-      const cantVidrios = reglas.cant_vidrios ?? catalogEntry.cant_vidrios;
-
-      const dynamicProfiles = [
-        {
-          type: 'MARCO',
-          material: perfilMarcoFinal,
-          rule: reglas.regla_marco,
-          ancho: window.width_cm,
-          alto: window.height_cm,
-          incluir: true,
-        },
-        {
-          type: 'HOJA',
-          material: perfilHojaFinal,
-          rule: reglas.regla_hoja,
-          ancho: hojaAncho,
-          alto: hojaAlto,
-          incluir: true,
-        },
-        {
-          type: 'MOSQUITERO',
-          material: perfilMosquiteroFinal,
-          rule: reglas.regla_mosquitero,
-          ancho: mosquiteroAncho,
-          alto: mosquiteroAlto,
-          incluir: conMosquitero,
-        },
-        {
-          type: 'BATIENTE',
-          material: perfilBatienteFinal,
-          rule: reglas.regla_batiente,
-          ancho: hojaAncho,
-          alto: hojaAlto,
-          incluir: true,
-        },
-        {
-          type: 'TAPAJAMBA',
-          material: perfilTapajambaFinal,
-          rule: reglas.regla_tapajamba,
-          ancho: window.width_cm,
-          alto: window.height_cm,
-          incluir: true,
-        },
-      ];
-
-      // 0. Barras/área aproximadas por slot — solo para evaluar accesorios con
-      //    fórmula (PER_BARRA/PER_M2). Es una aproximación por ventana (sin
-      //    bin-packing global), suficiente para cantidades de empaque/silicón/malla.
-      const slotMetricsForWindow: Record<
-        string,
-        { barras: number; areaM2: number }
-      > = {};
-      for (const profile of dynamicProfiles) {
-        if (!profile.incluir || !profile.material) continue;
-        const formulaSlot = window.formulaMeasurements?.[profile.type];
-        let cuts: { length: number; dim: string }[];
-        if (formulaSlot) {
-          cuts = this.getCutsFromSlotMeasurement(formulaSlot);
-        } else {
-          if (!profile.rule) continue;
-          cuts = this.getCutsWithDimension(profile.rule, profile.ancho, profile.alto);
-        }
-        const totalLength =
-          cuts.reduce((s, c) => s + c.length, 0) * windowQuantity;
-        slotMetricsForWindow[profile.type.toLowerCase()] = {
-          barras: Math.ceil(totalLength / BAR_LENGTH_REPORT),
-          areaM2: (profile.ancho * profile.alto * windowQuantity) / 10000,
-        };
-      }
-
-      // 1. ACCESORIOS
-      if (window.window_type_id) {
-        const rules = rulesByWindowType.get(window.window_type_id) || [];
-        for (const rule of rules) {
-          const shouldAdd =
-            !rule.option_group ||
-            options[rule.option_group] === rule.option_key;
-          if (!shouldAdd || !rule.material) continue;
-
-          // Omitir accesorios de mosquitero si no lleva mosquitero
-          if (!conMosquitero) {
-            const nombreUpper = rule.material.name.toUpperCase();
-            if (
-              nombreUpper.includes('MOSQUITERO') ||
-              nombreUpper.includes('CEDAZO') ||
-              nombreUpper.includes('MAYA')
-            )
-              continue;
-          }
-
-          // ── Cantidad por fórmula (barras/m2, convertido a unidades de venta) o fija ──
-          let cantidadAcumular: number;
-          if (rule.formula_type && rule.formula_slot) {
-            const metrics = slotMetricsForWindow[
-              rule.formula_slot.toLowerCase()
-            ] ?? { barras: 0, areaM2: 0 };
-            const factor = rule.formula_factor ?? 1;
-            const necesario =
-              rule.formula_type === 'PER_M2'
-                ? metrics.areaM2 * factor
-                : metrics.barras * factor;
-            const coverage = rule.material.coverage_per_unit ?? 1;
-            cantidadAcumular = Math.ceil(necesario / coverage);
-          } else {
-            cantidadAcumular = rule.quantity * windowQuantity;
-          }
-          if (cantidadAcumular <= 0) continue;
-
-          const key = `${rule.material.name}|${window.pvcColor.name}`;
-          const existing = accessoriesReportMap.get(key) || {
-            material: rule.material,
-            quantity: 0,
-            pvcColor: window.pvcColor.name,
-            note: '',
-          };
-          if (rule.material.name === 'LANCETA')
-            existing.note = `Cortar a ${window.width_cm} cm`;
-          existing.quantity += cantidadAcumular;
-          accessoriesReportMap.set(key, existing);
-        }
-      }
-
-      // 2. PERFILES + REFUERZOS
-      for (const profile of dynamicProfiles) {
-        if (!profile.incluir || !profile.material) continue;
-
-        const formulaSlot = window.formulaMeasurements?.[profile.type];
-        let individualCuts: { length: number; dim: string }[];
-        if (formulaSlot) {
-          individualCuts = this.getCutsFromSlotMeasurement(formulaSlot);
-        } else {
-          if (!profile.rule) continue;
-          individualCuts = this.getCutsWithDimension(profile.rule, profile.ancho, profile.alto);
-        }
-        if (individualCuts.length === 0) continue;
-
-        const key = `${window.pvcColor.name}|${profile.material.name}`;
-        if (!profilesReportMap.has(key)) {
-          profilesReportMap.set(key, {
-            material: profile.material,
-            pvcColor: window.pvcColor.name,
-            cuts: [],
-            totalLength: 0,
-            isDuela: false,
-          });
-        }
-        const existing = profilesReportMap.get(key)!;
-        for (let q = 0; q < windowQuantity; q++) {
-          for (const cut of individualCuts) {
-            existing.cuts.push(Number(cut.length.toFixed(1)));
-          }
-        }
-
-        // ── Refuerzo Hojas: misma cuts que HOJA ───────────────────────────
-        if (
-          profile.type === 'HOJA' &&
-          conRefuerzoHojas &&
-          catalogEntry.refuerzoHoja
-        ) {
-          const refKey = `${window.pvcColor.name}|${catalogEntry.refuerzoHoja.name}`;
-          if (!profilesReportMap.has(refKey)) {
-            profilesReportMap.set(refKey, {
-              material: catalogEntry.refuerzoHoja,
-              pvcColor: window.pvcColor.name,
-              cuts: [],
-              totalLength: 0,
-              isDuela: false,
-            });
-          }
-          const refExisting = profilesReportMap.get(refKey)!;
-          for (let q = 0; q < windowQuantity; q++) {
-            for (const cut of individualCuts) {
-              refExisting.cuts.push(Number(cut.length.toFixed(1)));
-            }
-          }
-        }
-
-        // ── Refuerzo Mosquitero: misma cuts que MOSQUITERO ────────────────
-        if (
-          profile.type === 'MOSQUITERO' &&
-          conRefuerzoMosquitero &&
-          catalogEntry.refuerzoMosquitero
-        ) {
-          const refKey = `${window.pvcColor.name}|${catalogEntry.refuerzoMosquitero.name}`;
-          if (!profilesReportMap.has(refKey)) {
-            profilesReportMap.set(refKey, {
-              material: catalogEntry.refuerzoMosquitero,
-              pvcColor: window.pvcColor.name,
-              cuts: [],
-              totalLength: 0,
-              isDuela: false,
-            });
-          }
-          const refExisting = profilesReportMap.get(refKey)!;
-          for (let q = 0; q < windowQuantity; q++) {
-            for (const cut of individualCuts) {
-              refExisting.cuts.push(Number(cut.length.toFixed(1)));
-            }
-          }
-        }
-      }
-
-      // 3. VIDRIOS (solo si tiene mosquitero)
-      if (window.glassColor) {
-        const glassNameUpper = window.glassColor.name.toUpperCase();
-
-        if (glassNameUpper.includes('DUELA')) {
-          const duelaMaterial = materialsMap.get('DUELA');
-          if (duelaMaterial) {
-            const stripsNeeded = Math.ceil(vidrioAlto / 15);
-            const totalDuelaLength = stripsNeeded * vidrioAncho;
-            const key = `${window.pvcColor.name}|${duelaMaterial.name}`;
-            if (!profilesReportMap.has(key)) {
-              profilesReportMap.set(key, {
-                material: duelaMaterial,
-                pvcColor: window.pvcColor.name,
-                cuts: [],
-                totalLength: 0,
-                isDuela: true,
-              });
-            }
-            profilesReportMap.get(key)!.totalLength +=
-              totalDuelaLength * windowQuantity;
-          }
-        } else if (glassNameUpper !== 'VIDRIO Y DUELA') {
-          // El vidrio siempre se calcula — independiente de si lleva mosquitero
-          const glassMaterial = materialsMap.get(window.glassColor.name);
-          if (glassMaterial && vidrioAncho > 0 && vidrioAlto > 0) {
-            const key = glassMaterial.name;
-            const glassCount = cantVidrios ?? 1;
-            const sheetWidth = Number(window.glassColor.sheet_width ?? 213);
-            const sheetHeight = Number(window.glassColor.sheet_height ?? 165.8);
-            if (!glassReportMap.has(key)) {
-              glassReportMap.set(key, {
-                material: glassMaterial,
-                sheetWidth,
-                sheetHeight,
-                pieces: [],
-              });
-            }
-            const entry = glassReportMap.get(key)!;
-            // Agregar una pieza por cada vidrio × cantidad de ventanas
-            for (let q = 0; q < glassCount * windowQuantity; q++) {
-              entry.pieces.push({
-                width: Number(vidrioAncho.toFixed(1)),
-                height: Number(vidrioAlto.toFixed(1)),
-                label: `V${enrichedWindows.indexOf(window) + 1}`,
-              });
-            }
-          }
-        }
-      }
-    }
-
-    const profilesReport = Array.from(profilesReportMap.values()).map(
-      (item) => {
-        const isWhite = item.pvcColor.toUpperCase().includes('BLANCO');
-        const price = isWhite
-          ? item.material.price_white
-          : item.material.price_color;
-        const barras = item.isDuela
-          ? Math.ceil(item.totalLength / BAR_LENGTH_REPORT)
-          : this.optimizeCuts(item.cuts, BAR_LENGTH_REPORT).length;
-        return {
-          tipo: 'PERFIL',
-          nombre: item.material.name,
-          color: item.pvcColor,
-          cantidad: barras,
-          unidad: item.material.unit || 'Barra 5.8m',
-          precioUnitario: price || 0,
-          precioTotal: (price || 0) * barras,
-        };
-      },
-    );
-
-    const accessoriesReport = Array.from(accessoriesReportMap.values()).map(
-      (item) => {
-        const isWhite = item.pvcColor.toUpperCase().includes('BLANCO');
-        const price = isWhite
-          ? item.material.price_white
-          : item.material.price_color;
-        return {
-          tipo: 'ACCESORIO',
-          nombre: item.material.name,
-          color: isWhite ? 'Blanco' : 'Negro',
-          cantidad: item.quantity,
-          unidad: item.material.unit || 'Unidades',
-          precioUnitario: price || 0,
-          precioTotal: (price || 0) * item.quantity,
-          note: item.note,
-        };
-      },
-    );
-
-    const glassReport = Array.from(glassReportMap.values()).map((item) => {
-      const price = item.material.price_white || item.material.price_color || 0;
-      // Usar guillotinePack igual que buildGlassCutData para que coincidan los números
-      const sheets = guillotinePack(
-        item.pieces,
-        item.sheetWidth,
-        item.sheetHeight,
-      );
-      const planchas = sheets.length;
-      return {
-        tipo: 'VIDRIO',
-        nombre: item.material.name,
-        color: item.material.name,
-        cantidad: planchas,
-        unidad: 'Planchas',
-        precioUnitario: price,
-        precioTotal: price * planchas,
-      };
-    });
-
-    return [...profilesReport, ...accessoriesReport, ...glassReport].sort(
-      (a, b) =>
-        a.tipo.localeCompare(b.tipo) ||
-        a.color.localeCompare(b.color) ||
-        a.nombre.localeCompare(b.nombre),
-    );
+  // ── Reporte de materiales (perfiles/vidrio/accesorios + TOTAL DE COSTOS) ──
+  // Antes esta clase tenía su propia copia del cálculo de bin-packing/precios
+  // (processWindowsToReport, ~440 líneas), separada de la que usan las
+  // cotizaciones en cost-calculator.service.ts. Las dos podían desincronizarse
+  // — de hecho ya lo estaban (vidrio siempre a precio blanco acá). Ahora ambas
+  // pantallas (cotización y reporte de materiales/pedido) llaman al mismo
+  // motor, así que el "precio sugerido" y el "TOTAL DE COSTOS" siempre
+  // coinciden.
+  private windowToCostInput(w: {
+    window_type_id: number | null;
+    width_cm: number;
+    height_cm: number;
+    color_id: number | null;
+    glass_color_id: number | null;
+    options: any;
+    quantity: number | null;
+  }) {
+    return {
+      window_type_id: w.window_type_id as number,
+      width_cm: w.width_cm,
+      height_cm: w.height_cm,
+      color_id: w.color_id as number,
+      glass_color_id: w.glass_color_id ?? undefined,
+      options: (w.options as Record<string, string>) || {},
+      quantity: w.quantity || 1,
+    };
   }
 
   async generateProfilesReport(orderId: number) {
@@ -561,7 +151,12 @@ export class ReportsService {
       },
     });
     if (!order) throw new NotFoundException(`Pedido #${orderId} no encontrado`);
-    return this.processWindowsToReport(order.windows);
+    const validWindows = order.windows.filter(
+      (w) => w.window_type_id && w.color_id,
+    );
+    return this.costCalculator.calcularReporteMateriales(
+      validWindows.map((w) => this.windowToCostInput(w)),
+    );
   }
 
   async generateProfilesReportByQuotation(quotationId: number) {
@@ -576,17 +171,12 @@ export class ReportsService {
     if (!quotation)
       throw new NotFoundException(`Cotización #${quotationId} no encontrada`);
 
-    const normalizedWindows = quotation.quotation_windows.map((qw) => ({
-      ...qw,
-      window_type_id: qw.window_type_id,
-      windowType: qw.windowType,
-      pvcColor: qw.pvcColor,
-      glassColor: qw.glassColor,
-      options: qw.options || {},
-      quantity: qw.quantity || 1,
-    }));
-
-    return this.processWindowsToReport(normalizedWindows);
+    const validWindows = quotation.quotation_windows.filter(
+      (w) => w.window_type_id && w.color_id,
+    );
+    return this.costCalculator.calcularReporteMateriales(
+      validWindows.map((w) => this.windowToCostInput(w)),
+    );
   }
 
   async getOrderMaterialCost(orderId: number): Promise<number> {
@@ -664,6 +254,13 @@ export class ReportsService {
       orderWhere.generatedFromQuotation = { userId: filters.userId };
     }
 
+    // Antes: esta consulta NO traía las ventanas, y por cada pedido
+    // getOrderMaterialCost() disparaba su propio order.findUnique (con
+    // includes) para volver a traerlas — un round-trip extra, por pedido,
+    // que ya teníamos en la mano. Con un rango de fechas amplio (ej. "todo
+    // el año") esto eran cientos de consultas redundantes para cargar el
+    // dashboard de Ganancias. Ahora se traen aquí mismo, en la consulta
+    // batch, y el costo se calcula directo desde esos datos.
     const orders = await this.prisma.order.findMany({
       where: orderWhere,
       select: {
@@ -678,6 +275,17 @@ export class ReportsService {
         generatedFromQuotation: {
           select: { user: { select: { id: true, name: true } } },
         },
+        windows: {
+          select: {
+            window_type_id: true,
+            width_cm: true,
+            height_cm: true,
+            color_id: true,
+            glass_color_id: true,
+            options: true,
+            quantity: true,
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -685,7 +293,16 @@ export class ReportsService {
     const summaries = await Promise.all(
       orders.map(async (order) => {
         try {
-          const materialCost = await this.getOrderMaterialCost(order.id);
+          const validWindows = order.windows.filter(
+            (w) => w.window_type_id && w.color_id,
+          );
+          const materialReport = await this.costCalculator.calcularReporteMateriales(
+            validWindows.map((w) => this.windowToCostInput(w)),
+          );
+          const materialCost = materialReport.reduce(
+            (sum, item) => sum + (item.precioTotal || 0),
+            0,
+          );
           const salePrice = order.total || 0;
           const profit = salePrice - materialCost;
           const profitMargin = salePrice > 0 ? (profit / salePrice) * 100 : 0;
@@ -1782,21 +1399,4 @@ export class ReportsService {
     });
   }
 
-  private optimizeCuts(cuts: number[], barLength: number): number[][] {
-    const sortedCuts = cuts.sort((a, b) => b - a);
-    const bins: { cuts: number[]; remaining: number }[] = [];
-    for (const cut of sortedCuts) {
-      let placed = false;
-      for (const bin of bins) {
-        if (cut <= bin.remaining) {
-          bin.cuts.push(cut);
-          bin.remaining -= cut;
-          placed = true;
-          break;
-        }
-      }
-      if (!placed) bins.push({ cuts: [cut], remaining: barLength - cut });
-    }
-    return bins.map((bin) => bin.cuts);
-  }
 }

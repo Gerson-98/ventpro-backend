@@ -42,6 +42,22 @@ export interface QuotationCostResult {
   por_ventana: WindowCostResult[];
 }
 
+// ── Línea de reporte de materiales (usada por reports.service para el
+// "Reporte de Perfiles" / TOTAL DE COSTOS y el módulo de compra de
+// materiales) — mismo shape que antes producía reports.service a mano,
+// pero ahora nace del mismo motor de bin-packing/precios que las
+// cotizaciones, para que ambos números coincidan siempre.
+export interface MaterialReportLine {
+  tipo: 'PERFIL' | 'VIDRIO' | 'ACCESORIO';
+  nombre: string;
+  color: string;
+  cantidad: number;
+  unidad: string;
+  precioUnitario: number;
+  precioTotal: number;
+  note?: string;
+}
+
 export interface ResolvedRules {
   regla_marco: string | null;
   regla_hoja: string | null;
@@ -105,6 +121,9 @@ export class CostCalculatorService {
   private calcParamsCache = new Map<number, CacheEntry<any>>();
   private accessoryRulesCache = new Map<number, CacheEntry<any[]>>();
   private glassColorNameCache = new Map<number, CacheEntry<string>>();
+  private glassColorFullCache = new Map<number, CacheEntry<any>>();
+  private duelaMaterialCache: CacheEntry<any> | null = null;
+  private materialCache = new Map<number, CacheEntry<any>>();
 
   private getFromCache<T>(
     cache: Map<number, CacheEntry<T>>,
@@ -134,6 +153,33 @@ export class CostCalculatorService {
     this.calcParamsCache.clear();
     this.accessoryRulesCache.clear();
     this.glassColorNameCache.clear();
+    this.glassColorFullCache.clear();
+    this.duelaMaterialCache = null;
+    this.materialCache.clear();
+  }
+
+  // ── glassColor completo (con material) cacheado — antes cada ventana en
+  // un loop de N ventanas hacía su propio findUnique aunque compartieran el
+  // mismo glass_color_id; con pedidos grandes esto se sumaba a docenas de
+  // round-trips redundantes a la base de datos en cada cálculo.
+  private async getGlassColorFull(id: number) {
+    const cached = this.getFromCache(this.glassColorFullCache, id);
+    if (cached !== null) return cached;
+    const gc = await this.prisma.glassColor.findUnique({
+      where: { id },
+      include: { material: true },
+    });
+    if (gc) this.setInCache(this.glassColorFullCache, id, gc);
+    return gc;
+  }
+
+  private async getDuelaMaterial() {
+    if (this.duelaMaterialCache && Date.now() <= this.duelaMaterialCache.expiresAt) {
+      return this.duelaMaterialCache.value;
+    }
+    const duelaMaterial = await this.prisma.material.findFirst({ where: { name: 'DUELA' } });
+    this.duelaMaterialCache = { value: duelaMaterial, expiresAt: Date.now() + CACHE_TTL_MS };
+    return duelaMaterial;
   }
 
   private async getGlassColorName(id?: number): Promise<string | undefined> {
@@ -445,10 +491,7 @@ export class CostCalculatorService {
       // ── Vidrio: siempre se calcula si la ventana tiene vidrios configurados ──
       // El mosquitero es independiente — el vidrio siempre va en la ventana
       if (cantVidrios && cantVidrios > 0 && input.glass_color_id) {
-        const glassColor = await this.prisma.glassColor.findUnique({
-          where: { id: input.glass_color_id },
-          include: { material: true },
-        });
+        const glassColor = await this.getGlassColorFull(input.glass_color_id);
 
         if (glassColor?.material) {
           const materialVidrio = glassColor.material;
@@ -546,14 +589,26 @@ export class CostCalculatorService {
       reglas.perfil_tapajamba_id,
     ].filter((id): id is number => id !== null);
 
-    const materialesOverride =
-      idsACargar.length > 0
-        ? await this.prisma.material.findMany({
-            where: { id: { in: idsACargar } },
-          })
-        : [];
-
-    const byId = new Map(materialesOverride.map((m) => [m.id, m]));
+    // Antes esto era un findMany sin cache — con una ventana que usa perfiles
+    // "override" (ruleOverrides), cada ventana del pedido volvía a golpear la
+    // base de datos por los mismos materiales. Se cachea igual que el resto
+    // de catálogos/materiales de esta clase.
+    const byId = new Map<number, any>();
+    const faltantes: number[] = [];
+    for (const id of idsACargar) {
+      const cached = this.getFromCache(this.materialCache, id);
+      if (cached !== null) byId.set(id, cached);
+      else faltantes.push(id);
+    }
+    if (faltantes.length > 0) {
+      const materialesOverride = await this.prisma.material.findMany({
+        where: { id: { in: faltantes } },
+      });
+      for (const m of materialesOverride) {
+        byId.set(m.id, m);
+        this.setInCache(this.materialCache, m.id, m);
+      }
+    }
 
     return {
       marco:
@@ -884,13 +939,22 @@ export class CostCalculatorService {
   }
 
   // ── Acumula cortes de perfiles de TODAS las ventanas y bin-packea globalmente ──
-  // Igual que processWindowsToReport en reports.service — las sobras de una barra
-  // pueden usarse para otra ventana del mismo perfil, reduciendo el costo real.
-  private async calcularCostoPerfilesGlobal(
+  // Única fuente de verdad para perfiles: la usan tanto las cotizaciones
+  // (calcularCostoPerfilesGlobal) como el reporte de materiales de un pedido
+  // (calcularReporteMateriales) — antes reports.service tenía su propia copia
+  // de este mismo cálculo, y las dos podían desincronizarse.
+  // Clave = materialId|color: así una misma barra en dos colores distintos
+  // (blanco vs color, ej. dentro de la misma cotización) no se mezcla bajo un
+  // solo precio — cada color bin-packea y se precia por separado.
+  private async construirMapaPerfilesGlobal(
     windows: WindowCostInput[],
-  ): Promise<number> {
-    // materialId → { cuts: number[], precio: number }
-    const perfilMap = new Map<number, { cuts: number[]; precio: number }>();
+  ): Promise<
+    Map<string, { nombre: string; color: string; cuts: number[]; precio: number }>
+  > {
+    const perfilMap = new Map<
+      string,
+      { nombre: string; color: string; cuts: number[]; precio: number }
+    >();
 
     for (const win of windows) {
       const {
@@ -906,6 +970,7 @@ export class CostCalculatorService {
       const esBlanco = pvcColor
         ? pvcColor.name.toUpperCase().includes('BLANCO')
         : false;
+      const colorLabel = pvcColor?.name ?? 'Blanco';
 
       const windowType = await this.getWindowType(window_type_id);
       if (!windowType) continue;
@@ -1019,10 +1084,11 @@ export class CostCalculatorService {
           cortesPorVentana = this.getCutsFromRule(regla, ancho, alto);
         }
 
-        if (!perfilMap.has(perfil.id)) {
-          perfilMap.set(perfil.id, { cuts: [], precio });
+        const key = `${perfil.id}|${colorLabel}`;
+        if (!perfilMap.has(key)) {
+          perfilMap.set(key, { nombre: perfil.name, color: colorLabel, cuts: [], precio });
         }
-        const entry = perfilMap.get(perfil.id)!;
+        const entry = perfilMap.get(key)!;
         for (let q = 0; q < quantity; q++) {
           entry.cuts.push(...cortesPorVentana);
         }
@@ -1034,13 +1100,16 @@ export class CostCalculatorService {
             : (catalogo.refuerzoHoja.price_color ??
               catalogo.refuerzoHoja.price_white ??
               0);
-          if (!perfilMap.has(catalogo.refuerzoHoja.id)) {
-            perfilMap.set(catalogo.refuerzoHoja.id, {
+          const refKey = `${catalogo.refuerzoHoja.id}|${colorLabel}`;
+          if (!perfilMap.has(refKey)) {
+            perfilMap.set(refKey, {
+              nombre: catalogo.refuerzoHoja.name,
+              color: colorLabel,
               cuts: [],
               precio: precioRef,
             });
           }
-          const refEntry = perfilMap.get(catalogo.refuerzoHoja.id)!;
+          const refEntry = perfilMap.get(refKey)!;
           for (let q = 0; q < quantity; q++) {
             refEntry.cuts.push(...cortesPorVentana);
           }
@@ -1057,19 +1126,30 @@ export class CostCalculatorService {
             : (catalogo.refuerzoMosquitero.price_color ??
               catalogo.refuerzoMosquitero.price_white ??
               0);
-          if (!perfilMap.has(catalogo.refuerzoMosquitero.id)) {
-            perfilMap.set(catalogo.refuerzoMosquitero.id, {
+          const refKey = `${catalogo.refuerzoMosquitero.id}|${colorLabel}`;
+          if (!perfilMap.has(refKey)) {
+            perfilMap.set(refKey, {
+              nombre: catalogo.refuerzoMosquitero.name,
+              color: colorLabel,
               cuts: [],
               precio: precioRef,
             });
           }
-          const refEntry = perfilMap.get(catalogo.refuerzoMosquitero.id)!;
+          const refEntry = perfilMap.get(refKey)!;
           for (let q = 0; q < quantity; q++) {
             refEntry.cuts.push(...cortesPorVentana);
           }
         }
       }
     }
+
+    return perfilMap;
+  }
+
+  private async calcularCostoPerfilesGlobal(
+    windows: WindowCostInput[],
+  ): Promise<number> {
+    const perfilMap = await this.construirMapaPerfilesGlobal(windows);
 
     // Bin-packing global por perfil → costo total de perfiles
     let costoTotal = 0;
@@ -1130,26 +1210,40 @@ export class CostCalculatorService {
 
 
   // ── Acumula piezas de vidrio de TODAS las ventanas y calcula planchas con
-  //    guillotinePackCount (MaxRects-BSSF) — misma lógica que processWindowsToReport
-  //    en reports.service. DUELA se calcula como barras lineales, no como planchas 2D.
-  private async calcularCostoVidrioGlobal(
-    windows: WindowCostInput[],
-  ): Promise<number> {
-    // glass_color_id → { precio, sheetWidth, sheetHeight, pieces[] }
-    const glassMap = new Map<
-      number,
+  //    guillotinePackCount (MaxRects-BSSF). Única fuente de verdad para vidrio —
+  //    la usan tanto las cotizaciones como el reporte de materiales de un pedido.
+  //    DUELA se calcula como barras lineales, no como planchas 2D.
+  // Claves con color: igual que en perfiles, para no mezclar precios de blanco
+  // vs. color bajo un solo bin-packing/precio cuando una cotización combina colores.
+  private async construirMapasVidrioGlobal(windows: WindowCostInput[]): Promise<{
+    glassMap: Map<
+      string,
       {
+        nombre: string;
+        color: string;
+        precio: number;
+        sheetWidth: number;
+        sheetHeight: number;
+        pieces: { width: number; height: number }[];
+      }
+    >;
+    duelaMap: Map<string, { color: string; totalLength: number; precio: number }>;
+  }> {
+    const glassMap = new Map<
+      string,
+      {
+        nombre: string;
+        color: string;
         precio: number;
         sheetWidth: number;
         sheetHeight: number;
         pieces: { width: number; height: number }[];
       }
     >();
-
-    // DUELA: se calcula como barras lineales (igual que processWindowsToReport)
-    let duelaTotalLength = 0;
-    let duelaPrecio = 0;
-    let duelaInitialized = false;
+    const duelaMap = new Map<
+      string,
+      { color: string; totalLength: number; precio: number }
+    >();
 
     for (const win of windows) {
       const {
@@ -1168,6 +1262,7 @@ export class CostCalculatorService {
       const esBlanco = pvcColor
         ? pvcColor.name.toUpperCase().includes('BLANCO')
         : false;
+      const colorLabel = pvcColor?.name ?? 'Blanco';
 
       const catalogo = await this.getCatalogo(window_type_id);
       if (!catalogo) continue;
@@ -1198,32 +1293,28 @@ export class CostCalculatorService {
       if (vidrioAncho <= 0 || vidrioAlto <= 0) continue;
 
       // Obtener el glassColor para verificar si es DUELA
-      const glassColor = await this.prisma.glassColor.findUnique({
-        where: { id: glass_color_id },
-        include: { material: true },
-      });
+      const glassColor = await this.getGlassColorFull(glass_color_id);
       if (!glassColor?.material) continue;
 
       const glassNameUpper = glassColor.name.toUpperCase();
 
       // ── DUELA: calcular como barras lineales (no como planchas 2D) ──
       if (glassNameUpper.includes('DUELA') && glassNameUpper !== 'VIDRIO Y DUELA') {
-        if (!duelaInitialized) {
-          const duelaMaterial = await this.prisma.material.findFirst({
-            where: { name: 'DUELA' },
-          });
-          if (duelaMaterial) {
-            duelaPrecio = esBlanco
+        if (!duelaMap.has(colorLabel)) {
+          const duelaMaterial = await this.getDuelaMaterial();
+          const duelaPrecio = duelaMaterial
+            ? esBlanco
               ? (duelaMaterial.price_white ?? duelaMaterial.price_color ?? 0)
-              : (duelaMaterial.price_color ?? duelaMaterial.price_white ?? 0);
-            duelaInitialized = true;
-          }
+              : (duelaMaterial.price_color ?? duelaMaterial.price_white ?? 0)
+            : 0;
+          duelaMap.set(colorLabel, { color: colorLabel, totalLength: 0, precio: duelaPrecio });
         }
         const reglas = this.aplicarRuleOverrides(catalogo, options, glassColor.name);
         const cantVidrios = reglas.cant_vidrios ?? catalogo.cant_vidrios ?? 1;
+        const duelaEntry = duelaMap.get(colorLabel)!;
         for (let q = 0; q < cantVidrios * quantity; q++) {
           const stripsNeeded = Math.ceil(vidrioAlto / 15);
-          duelaTotalLength += stripsNeeded * vidrioAncho;
+          duelaEntry.totalLength += stripsNeeded * vidrioAncho;
         }
         continue;
       }
@@ -1235,8 +1326,9 @@ export class CostCalculatorService {
       const cantVidrios = reglas.cant_vidrios ?? catalogo.cant_vidrios;
       if (!cantVidrios || cantVidrios <= 0) continue;
 
-      // Inicializar entrada del mapa la primera vez que aparece este glassColor
-      if (!glassMap.has(glass_color_id)) {
+      // Inicializar entrada del mapa la primera vez que aparece este glassColor+color
+      const key = `${glass_color_id}|${colorLabel}`;
+      if (!glassMap.has(key)) {
         const precio = esBlanco
           ? (glassColor.material.price_white ??
             glassColor.material.price_color ??
@@ -1245,7 +1337,9 @@ export class CostCalculatorService {
             glassColor.material.price_white ??
             0);
 
-        glassMap.set(glass_color_id, {
+        glassMap.set(key, {
+          nombre: glassColor.material.name,
+          color: colorLabel,
           precio,
           sheetWidth: Number(glassColor.sheet_width ?? 213),
           sheetHeight: Number(glassColor.sheet_height ?? 165.8),
@@ -1253,7 +1347,7 @@ export class CostCalculatorService {
         });
       }
 
-      const entry = glassMap.get(glass_color_id)!;
+      const entry = glassMap.get(key)!;
       // Una pieza por cada vidrio × cantidad de ventanas (igual que el reporte)
       for (let q = 0; q < cantVidrios * quantity; q++) {
         entry.pieces.push({
@@ -1262,6 +1356,14 @@ export class CostCalculatorService {
         });
       }
     }
+
+    return { glassMap, duelaMap };
+  }
+
+  private async calcularCostoVidrioGlobal(
+    windows: WindowCostInput[],
+  ): Promise<number> {
+    const { glassMap, duelaMap } = await this.construirMapasVidrioGlobal(windows);
 
     let costoTotal = 0;
 
@@ -1273,11 +1375,208 @@ export class CostCalculatorService {
     }
 
     // DUELA: barras lineales
-    if (duelaTotalLength > 0 && duelaPrecio > 0) {
-      const barras = Math.ceil(duelaTotalLength / LARGO_BARRA_CM);
-      costoTotal += barras * duelaPrecio;
+    for (const [, { totalLength, precio }] of duelaMap) {
+      if (totalLength > 0 && precio > 0) {
+        const barras = Math.ceil(totalLength / LARGO_BARRA_CM);
+        costoTotal += barras * precio;
+      }
     }
 
     return costoTotal;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // ── Reporte de materiales (pedidos/cotizaciones) — antes vivía duplicado
+  // en reports.service.ts con su propio bin-packing/precios; ahora reutiliza
+  // este mismo motor para que "precio sugerido" y "TOTAL DE COSTOS" siempre
+  // coincidan con el de la cotización.
+  // ═══════════════════════════════════════════════════════════════════════
+  async calcularReporteMateriales(
+    windows: WindowCostInput[],
+  ): Promise<MaterialReportLine[]> {
+    const [perfilMap, { glassMap, duelaMap }] = await Promise.all([
+      this.construirMapaPerfilesGlobal(windows),
+      this.construirMapasVidrioGlobal(windows),
+    ]);
+
+    const lineasPerfiles: MaterialReportLine[] = [];
+    for (const { nombre, color, cuts, precio } of perfilMap.values()) {
+      const barras = this.ffdBinPack(cuts, LARGO_BARRA_CM);
+      lineasPerfiles.push({
+        tipo: 'PERFIL',
+        nombre,
+        color,
+        cantidad: barras,
+        unidad: 'Barra 5.8m',
+        precioUnitario: precio,
+        precioTotal: precio * barras,
+      });
+    }
+
+    const lineasVidrio: MaterialReportLine[] = [];
+    for (const { nombre, color, precio, sheetWidth, sheetHeight, pieces } of glassMap.values()) {
+      if (pieces.length === 0) continue;
+      const planchas = guillotinePackCount(pieces, sheetWidth, sheetHeight);
+      lineasVidrio.push({
+        tipo: 'VIDRIO',
+        nombre,
+        color: nombre,
+        cantidad: planchas,
+        unidad: 'Planchas',
+        precioUnitario: precio,
+        precioTotal: precio * planchas,
+      });
+    }
+    for (const { color, totalLength, precio } of duelaMap.values()) {
+      if (totalLength <= 0 || precio <= 0) continue;
+      const barras = Math.ceil(totalLength / LARGO_BARRA_CM);
+      lineasVidrio.push({
+        tipo: 'VIDRIO',
+        nombre: 'DUELA',
+        color: 'DUELA',
+        cantidad: barras,
+        unidad: 'Barra 5.8m',
+        precioUnitario: precio,
+        precioTotal: precio * barras,
+      });
+    }
+
+    // Accesorios: la cantidad de un accesorio con fórmula (PER_BARRA/PER_M2)
+    // se resuelve por ventana individual (sin bin-packing global, igual que
+    // calcularCostoCotizacion hace al sumar por_ventana) — se reutiliza el
+    // mismo calcularAccesorios ventana por ventana y se agrupan las líneas
+    // resultantes por material+color.
+    const accesorioMap = new Map<
+      string,
+      { nombre: string; color: string; cantidad: number; unidad: string; precioUnitario: number }
+    >();
+    for (const win of windows) {
+      const {
+        window_type_id,
+        width_cm,
+        height_cm,
+        color_id,
+        options = {},
+        quantity = 1,
+      } = win;
+
+      const pvcColor = await this.getPvcColor(color_id);
+      const esBlanco = pvcColor
+        ? pvcColor.name.toUpperCase().includes('BLANCO')
+        : false;
+      const colorLabel = pvcColor?.name ?? 'Blanco';
+
+      const windowType = await this.getWindowType(window_type_id);
+      if (!windowType) continue;
+      const catalogo = await this.getCatalogo(windowType.id);
+
+      const formulaMeasurements = await this.getFormulaMeasurements(
+        window_type_id,
+        windowType.calc_engine,
+        width_cm,
+        height_cm,
+        options,
+      );
+
+      let hojaAncho = width_cm;
+      let hojaAlto = height_cm;
+      let mosquiteroAncho = width_cm;
+      let mosquiteroAlto = height_cm;
+      if (formulaMeasurements) {
+        const hoja = formulaMeasurements['HOJA'] ?? { ancho: width_cm, alto: height_cm, piezasAncho: 2, piezasAlto: 2 };
+        const vidrio = formulaMeasurements['VIDRIO'] ?? hoja;
+        hojaAncho = hoja.ancho;
+        hojaAlto = hoja.alto;
+        mosquiteroAncho = vidrio.ancho;
+        mosquiteroAlto = vidrio.alto;
+      } else if (catalogo) {
+        const calcParams = await this.getCalcParams(window_type_id);
+        const legacy = this.calcularMedidasHoja(width_cm, height_cm, calcParams, options);
+        hojaAncho = legacy.hojaAncho;
+        hojaAlto = legacy.hojaAlto;
+        mosquiteroAncho = Number((hojaAncho - legacy.vidrioDescuento).toFixed(2));
+        mosquiteroAlto = Number((hojaAlto - legacy.vidrioDescuento).toFixed(2));
+      }
+
+      const conMosquitero = catalogo ? this.tieneMosquitero(options, catalogo) : false;
+
+      // slotMetrics por ventana (barras/áreas) — mismas fórmulas que
+      // calcularCostoVentana usa para accesorios PER_BARRA/PER_M2.
+      const slotMetrics: Record<string, { barras: number; areaM2: number }> = {};
+      if (catalogo) {
+        const glassColorName = await this.getGlassColorName(win.glass_color_id);
+        const reglas = this.aplicarRuleOverrides(catalogo, options, glassColorName);
+        const perfilesOverride = await this.resolverPerfilesOverride(reglas, catalogo);
+        const perfiles = [
+          { perfil: perfilesOverride.marco, regla: reglas.regla_marco, slot: 'MARCO', ancho: width_cm, alto: height_cm, incluir: true },
+          { perfil: perfilesOverride.hoja, regla: reglas.regla_hoja, slot: 'HOJA', ancho: hojaAncho, alto: hojaAlto, incluir: true },
+          { perfil: perfilesOverride.mosquitero, regla: reglas.regla_mosquitero, slot: 'MOSQUITERO', ancho: mosquiteroAncho, alto: mosquiteroAlto, incluir: conMosquitero },
+          { perfil: perfilesOverride.batiente, regla: reglas.regla_batiente, slot: 'BATIENTE', ancho: hojaAncho, alto: hojaAlto, incluir: true },
+          { perfil: perfilesOverride.tapajamba, regla: reglas.regla_tapajamba, slot: 'TAPAJAMBA', ancho: width_cm, alto: height_cm, incluir: true },
+        ];
+        for (const { perfil, regla, slot, ancho, alto, incluir } of perfiles) {
+          if (!incluir || !perfil) continue;
+          let cortes: number[];
+          if (formulaMeasurements) {
+            const measurement = formulaMeasurements[slot];
+            if (!measurement) continue;
+            cortes = this.getCutsFromSlotMeasurement(measurement);
+          } else {
+            if (!regla) continue;
+            cortes = this.getCutsFromRule(regla, ancho, alto);
+          }
+          const todosLosCortes: number[] = [];
+          for (let q = 0; q < quantity; q++) todosLosCortes.push(...cortes);
+          slotMetrics[slot.toLowerCase()] = {
+            barras: this.ffdBinPack(todosLosCortes, LARGO_BARRA_CM),
+            areaM2: (ancho * alto * quantity) / 10000,
+          };
+        }
+      }
+
+      const detalle: MaterialCostLine[] = [];
+      await this.calcularAccesorios(
+        window_type_id,
+        options,
+        esBlanco,
+        quantity,
+        detalle,
+        conMosquitero,
+        slotMetrics,
+      );
+
+      for (const linea of detalle) {
+        if (linea.tipo !== 'ACCESORIO') continue;
+        const key = `${linea.material_id}|${colorLabel}`;
+        const existing = accesorioMap.get(key) ?? {
+          nombre: linea.nombre,
+          color: colorLabel,
+          cantidad: 0,
+          unidad: linea.unidad,
+          precioUnitario: linea.precio_unitario,
+        };
+        existing.cantidad += linea.cantidad;
+        accesorioMap.set(key, existing);
+      }
+    }
+
+    const lineasAccesorios: MaterialReportLine[] = Array.from(accesorioMap.values())
+      .filter((a) => a.cantidad > 0)
+      .map((a) => ({
+        tipo: 'ACCESORIO',
+        nombre: a.nombre,
+        color: a.color,
+        cantidad: a.cantidad,
+        unidad: a.unidad,
+        precioUnitario: a.precioUnitario,
+        precioTotal: a.precioUnitario * a.cantidad,
+      }));
+
+    return [...lineasPerfiles, ...lineasAccesorios, ...lineasVidrio].sort(
+      (a, b) =>
+        a.tipo.localeCompare(b.tipo) ||
+        a.color.localeCompare(b.color) ||
+        a.nombre.localeCompare(b.nombre),
+    );
   }
 }

@@ -40,16 +40,40 @@ export interface FormulaRow {
 
 const round2 = (n: number) => Number(n.toFixed(2));
 
+const CACHE_TTL_MS = 5 * 60 * 1000;
+interface CacheEntry<T> {
+  value: T;
+  expiresAt: number;
+}
+
 @Injectable()
 export class PerfilFormulasService {
   constructor(private prisma: PrismaService) {}
 
+  // Cache de fórmulas por tipo de ventana — resolveMeasurements() se llama
+  // varias veces por ventana (perfiles, vidrio, accesorios) y por pedido en
+  // reportes que recorren docenas de pedidos (ej. dashboard de Ganancias).
+  // Sin cache, cada una de esas llamadas repetía el mismo findMany con
+  // filas que casi nunca cambian. Se invalida en saveFormulaSet() y en
+  // cualquier otro lugar que escriba PerfilFormula directamente (ver
+  // clearCache()).
+  private formulasCache = new Map<number, CacheEntry<any[]>>();
+
+  clearCache(windowTypeId?: number): void {
+    if (windowTypeId != null) this.formulasCache.delete(windowTypeId);
+    else this.formulasCache.clear();
+  }
+
   // Trae todas las fórmulas configuradas para un tipo de ventana.
   async findByWindowType(windowTypeId: number) {
-    return this.prisma.perfilFormula.findMany({
+    const cached = this.formulasCache.get(windowTypeId);
+    if (cached && Date.now() <= cached.expiresAt) return cached.value;
+    const rows = await this.prisma.perfilFormula.findMany({
       where: { window_type_id: windowTypeId },
       orderBy: [{ slot: 'asc' }, { origen: 'asc' }],
     });
+    this.formulasCache.set(windowTypeId, { value: rows, expiresAt: Date.now() + CACHE_TTL_MS });
+    return rows;
   }
 
   // Calcula ancho/alto/piezas de cada perfil (marco, hoja, tapajamba,
@@ -220,7 +244,7 @@ export class PerfilFormulasService {
       throw new BadRequestException(errors);
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       await tx.perfilFormula.deleteMany({ where: { window_type_id: windowTypeId } });
       if (formulas.length === 0) return [];
       await tx.perfilFormula.createMany({
@@ -236,5 +260,7 @@ export class PerfilFormulasService {
       });
       return tx.perfilFormula.findMany({ where: { window_type_id: windowTypeId } });
     });
+    this.clearCache(windowTypeId);
+    return result;
   }
 }

@@ -516,7 +516,7 @@ export class ProductWizardService {
     const mosquitero = dto.perfiles.find((p) => p.slot === 'MOSQUITERO');
 
     try {
-      return await this.prisma.$transaction(async (tx) => {
+      const windowType = await this.prisma.$transaction(async (tx) => {
         const windowType = await tx.windowType.create({
           data: {
             name: dto.name,
@@ -585,6 +585,11 @@ export class ProductWizardService {
 
         return windowType;
       });
+      // Este servicio escribe PerfilFormula directo con `tx`, sin pasar por
+      // PerfilFormulasService.saveFormulaSet() — hay que invalidar su cache
+      // a mano o quedaría sirviendo fórmulas viejas hasta 5 min después.
+      this.perfilFormulas.clearCache(windowType.id);
+      return windowType;
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         throw new BadRequestException(`Ya existe un tipo de ventana llamado "${dto.name}".`);
@@ -616,7 +621,7 @@ export class ProductWizardService {
     const mosquitero = dto.perfiles.find((p) => p.slot === 'MOSQUITERO');
 
     try {
-      return await this.prisma.$transaction(async (tx) => {
+      const windowType = await this.prisma.$transaction(async (tx) => {
         const windowType = await tx.windowType.update({
           where: { id },
           data: {
@@ -703,6 +708,8 @@ export class ProductWizardService {
 
         return windowType;
       });
+      this.perfilFormulas.clearCache(windowType.id);
+      return windowType;
     } catch (err) {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
         throw new BadRequestException(`Ya existe un tipo de ventana llamado "${dto.name}".`);
