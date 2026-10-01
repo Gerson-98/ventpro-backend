@@ -345,9 +345,17 @@ export class OrdersService {
   // Todos los pedidos con fecha de fabricación agendada, sin importar rol
   // (igual que hoy: el calendario es una vista compartida por todo el equipo).
   async findScheduled(user: AuthUser) {
+    // Antes esto traía TODO pedido con fecha de fabricación desde siempre —
+    // sin filtro de fecha, la lista solo crece (ya iba por ~100 pedidos
+    // acumulados desde marzo) y la mayoría ya pasó, así que nunca puede
+    // chocar con una fecha nueva. Solo interesa lo que sigue "ocupando"
+    // el calendario: lo que termina hoy o después.
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
     return this.prisma.order.findMany({
       where: {
         fabricationStartDate: { not: null },
+        fabricationEndDate: { gte: startOfToday },
         status: { not: OrderStatus.cancelado },
       },
       select: {
@@ -367,9 +375,15 @@ export class OrdersService {
   // ─── findScheduledInstallation (Calendario de Instalación) ─────────────────
   // Pedidos con fecha real de instalación agendada.
   async findScheduledInstallation(user: AuthUser) {
+    // Mismo criterio que findScheduled(): solo lo que todavía ocupa el
+    // calendario (termina hoy o después), para que esta lista no crezca sin
+    // límite con instalaciones ya hechas hace meses.
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
     return this.prisma.order.findMany({
       where: {
         realInstallationStartDate: { not: null },
+        realInstallationEndDate: { gte: startOfToday },
         status: { not: OrderStatus.cancelado },
       },
       select: {
