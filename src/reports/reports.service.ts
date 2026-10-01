@@ -147,6 +147,7 @@ export class ReportsService {
       include: {
         windows: {
           include: { windowType: true, pvcColor: true, glassColor: true },
+          orderBy: { id: 'asc' },
         },
       },
     });
@@ -165,6 +166,7 @@ export class ReportsService {
       include: {
         quotation_windows: {
           include: { windowType: true, pvcColor: true, glassColor: true },
+          orderBy: { id: 'asc' },
         },
       },
     });
@@ -450,6 +452,7 @@ export class ReportsService {
       include: {
         windows: {
           include: { windowType: true, pvcColor: true, glassColor: true },
+          orderBy: { id: 'asc' },
         },
       },
     });
@@ -468,6 +471,7 @@ export class ReportsService {
       include: {
         windows: {
           include: { windowType: true, pvcColor: true, glassColor: true },
+          orderBy: { id: 'asc' },
         },
       },
     });
@@ -536,6 +540,7 @@ export class ReportsService {
       include: {
         windows: {
           include: { windowType: true, pvcColor: true, glassColor: true },
+          orderBy: { id: 'asc' },
         },
       },
     });
@@ -603,6 +608,7 @@ export class ReportsService {
       include: {
         windows: {
           include: { windowType: true, pvcColor: true, glassColor: true },
+          orderBy: { id: 'asc' },
         },
       },
     });
@@ -616,6 +622,7 @@ export class ReportsService {
       include: {
         quotation_windows: {
           include: { windowType: true, pvcColor: true, glassColor: true },
+          orderBy: { id: 'asc' },
         },
       },
     });
@@ -905,6 +912,16 @@ export class ReportsService {
         if (!formulaSlot && !profile.rule) continue;
         if (!esPerfilRecortable(profile.material)) continue;
 
+        // ── BATIENTE CORREDIZO: no se corta de barra en el taller ────────────
+        // A diferencia del resto de perfiles, este NO se nido-empaqueta desde
+        // barras de stock — se corta a medida/con cálculo pieza por pieza.
+        // Por eso NO debe aparecer en el plan de corte de máquina (aunque sí
+        // debe seguir contándose en "Reporte de Perfiles"/compra de
+        // materiales — ese reporte usa cost-calculator.service.ts, un motor
+        // completamente separado de este, así que excluirlo aquí no afecta
+        // cuántas barras hay que comprar).
+        if (profile.material.name.toUpperCase() === 'BATIENTE CORREDIZO') continue;
+
         // ── Corredizas: HOJA + MOSQUITERO → serie de máquina ─────────────────
         //   La máquina corta barras idénticas al mismo tiempo: 2 hojas + 1
         //   mosquitero, o 2 hojas sin mosquitero. Se resuelve todo en la
@@ -1085,7 +1102,19 @@ export class ReportsService {
       });
     }
 
-    return optimizationResult;
+    // ── TAPAJAMBA siempre al final del plan ───────────────────────────────
+    // Es el último perfil que se corta en el taller (va "hasta el fondo"),
+    // así que debe aparecer último en el reporte aunque su barra haya sido
+    // la primera en encontrarse al recorrer las ventanas.
+    const orderedResult: any = {};
+    const tapajambaKeys: string[] = [];
+    for (const key of Object.keys(optimizationResult)) {
+      if (key.toUpperCase().includes('TAPAJAMBA')) tapajambaKeys.push(key);
+      else orderedResult[key] = optimizationResult[key];
+    }
+    for (const key of tapajambaKeys) orderedResult[key] = optimizationResult[key];
+
+    return orderedResult;
   }
 
   private getCutsWithDimension(
