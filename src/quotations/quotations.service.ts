@@ -506,12 +506,28 @@ export class QuotationsService {
     // FABRICACIÓN (Calendario de Fabricación) — el primer paso tras
     // confirmar. La fecha real de instalación se agenda después, por
     // separado, cuando el pedido está "fabricado".
-    const { installationStartDate, installationEndDate } = confirmQuotationDto;
+    const { installationStartDate, installationEndDate, marcoUbicacion, quitarEtiquetas } =
+      confirmQuotationDto;
     if (!installationStartDate || !installationEndDate) {
       throw new BadRequestException(
         'Se requieren las fechas de inicio y fin de fabricación para confirmar.',
       );
     }
+    if (!marcoUbicacion || marcoUbicacion.length === 0 || !quitarEtiquetas) {
+      throw new BadRequestException(
+        'Se requiere confirmar con el cliente la ubicación del marco y si se van a quitar etiquetas antes de agendar fabricación.',
+      );
+    }
+
+    // ── Texto que se agrega a las notas del pedido con lo que el vendedor
+    // confirmó con el cliente — queda registrado igual que cualquier otra
+    // nota manual, para que el que fabrica/instala lo vea sin preguntar de
+    // nuevo.
+    const confirmationNoteLines = [
+      `Ubicación del marco: ${marcoUbicacion.join(', ')}`,
+      `¿Quitar etiquetas?: ${quitarEtiquetas}`,
+    ];
+    const confirmationNote = confirmationNoteLines.join('\n');
 
     const startDate = new Date(installationStartDate);
     const endDate = new Date(installationEndDate);
@@ -636,6 +652,10 @@ export class QuotationsService {
       };
     }));
 
+    const combinedNotes = [quotation.notes, confirmationNote]
+      .filter((n): n is string => !!n && n.trim().length > 0)
+      .join('\n\n');
+
     return this.prisma.$transaction(async (prisma) => {
       let resultOrder: { id: number };
 
@@ -657,7 +677,7 @@ export class QuotationsService {
             project: quotation.project,
             total: quotation.total_price,
             include_iva: quotation.include_iva ?? false,
-            notes: quotation.notes ?? null,
+            notes: combinedNotes || null,
             clientId: quotation.clientId,
             fabricationStartDate: startDate,
             fabricationEndDate: endDate,
@@ -672,7 +692,7 @@ export class QuotationsService {
             status: OrderStatus.en_fabricacion,
             clientId: quotation.clientId,
             include_iva: quotation.include_iva ?? false,
-            notes: quotation.notes ?? null,
+            notes: combinedNotes || null,
             generatedFromQuotationId: id,
             fabricationStartDate: startDate,
             fabricationEndDate: endDate,

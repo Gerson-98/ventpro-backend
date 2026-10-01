@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  ArrayMinSize,
   IsArray,
   IsBoolean,
   IsDateString,
@@ -100,4 +101,19 @@ export class ConfirmQuotationDto {
   @IsDateString()
   @IsNotEmpty()
   installationEndDate: string;
+
+  // ── Datos obligatorios de instalación que el vendedor debe confirmar con
+  // el cliente ANTES de agendar fabricación (ver confirm() en el service
+  // para el texto que arma con esto). Validados también en el backend —
+  // no basta con que el frontend los pida, porque el endpoint es la única
+  // fuente de verdad de si el pedido quedó realmente confirmado.
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsString({ each: true })
+  @IsNotEmpty({ each: true })
+  marcoUbicacion: string[];
+
+  @IsString()
+  @IsNotEmpty()
+  quitarEtiquetas: string;
 }
