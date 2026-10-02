@@ -1,18 +1,6 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ClientStatus } from '@prisma/client';
-import { isGenericClientName } from '../common/client-name.util';
-
-function assertRealClientName(name: string | undefined | null): void {
-  if (!name || !name.trim()) {
-    throw new BadRequestException('El nombre del cliente es obligatorio.');
-  }
-  if (isGenericClientName(name)) {
-    throw new BadRequestException(
-      `"${name}" no es un nombre de cliente válido — escribe el nombre real de la persona o empresa (llama al cliente si no lo tienes a mano).`,
-    );
-  }
-}
 
 @Injectable()
 export class ClientsService {
@@ -25,7 +13,6 @@ export class ClientsService {
     address?: string;
     status?: ClientStatus;
   }) {
-    assertRealClientName(data.name);
     return this.prisma.client.create({ data });
   }
 
@@ -53,7 +40,6 @@ export class ClientsService {
       status?: ClientStatus; // ✨ Permite actualizar el estado
     },
   ) {
-    if (data.name !== undefined) assertRealClientName(data.name);
     return this.prisma.client.update({
       where: { id },
       data,

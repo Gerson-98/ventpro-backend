@@ -10,7 +10,6 @@ import {
   ConfirmQuotationDto,
 } from './dto/create-quotation.dto';
 import { UpdateQuotationDto } from './dto/update-quotation.dto';
-import { isGenericClientName } from '../common/client-name.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { WindowsService } from '../windows/windows.service';
 import { OrderStatus, QuotationStatus } from '@prisma/client';
@@ -125,31 +124,6 @@ export class QuotationsService {
       notes,
       reference_image_url,
     } = createQuotationDto;
-
-    // Obligatorio también en el backend — el frontend ya lo exige, pero esta
-    // es la única fuente de verdad real. Sin cliente real, la cotización
-    // pierde trazabilidad (a quién se le cotizó, con quién confirmar datos).
-    if (!clientId) {
-      throw new BadRequestException(
-        'Debes seleccionar un cliente para crear la cotización.',
-      );
-    }
-    // No basta con bloquear la creación de clientes genéricos — un cliente
-    // así puede haber quedado creado ANTES de este fix y seguir reusándose
-    // para cada cotización nueva. Se valida también acá, contra el cliente
-    // ya guardado en BD.
-    const selectedClient = await this.prisma.client.findUnique({
-      where: { id: clientId },
-      select: { name: true },
-    });
-    if (!selectedClient) {
-      throw new BadRequestException(`Cliente #${clientId} no encontrado.`);
-    }
-    if (isGenericClientName(selectedClient.name)) {
-      throw new BadRequestException(
-        `El cliente "${selectedClient.name}" no tiene un nombre real — edítalo con el nombre real del cliente antes de cotizar (Clientes → editar).`,
-      );
-    }
 
     const today = new Date();
     const year = today.getFullYear().toString().slice(-2);
