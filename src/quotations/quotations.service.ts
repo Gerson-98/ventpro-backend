@@ -564,15 +564,27 @@ export class QuotationsService {
     // confirmó con el cliente — queda registrado igual que cualquier otra
     // nota manual, para que el que fabrica/instala lo vea sin preguntar de
     // nuevo. Solo se arma (y solo se guarda) la PRIMERA vez que se confirma.
-    const confirmationNoteLines = isReconfirm
-      ? []
-      : [
-          `Ubicación del marco: ${marcoUbicacion!.join(', ')}`,
-          `¿Quitar etiquetas?: ${quitarEtiquetas}`,
-          ...(referenciasInstalacion?.trim()
-            ? [`Referencias de instalación: ${referenciasInstalacion.trim()}`]
-            : []),
-        ];
+    // Orden fijo: datos del cliente primero, luego marco/etiquetas/referencias
+    // — así siempre se lee igual sin importar el pedido.
+    let confirmationNoteLines: string[] = [];
+    if (!isReconfirm) {
+      const confirmedClient = confirmClientId
+        ? await this.prisma.client.findUnique({ where: { id: confirmClientId } })
+        : null;
+      confirmationNoteLines = [
+        '— DATOS DEL CLIENTE —',
+        `Nombre: ${confirmedClient?.name ?? '—'}`,
+        `Teléfono: ${confirmedClient?.phone || '—'}`,
+        `Dirección: ${confirmedClient?.address || '—'}`,
+        '',
+        '— INSTALACIÓN —',
+        `Ubicación del marco: ${marcoUbicacion!.join(', ')}`,
+        `¿Quitar etiquetas?: ${quitarEtiquetas}`,
+        ...(referenciasInstalacion?.trim()
+          ? [`Referencias: ${referenciasInstalacion.trim()}`]
+          : []),
+      ];
+    }
     const confirmationNote = confirmationNoteLines.join('\n');
 
     const typeIds = [
@@ -680,7 +692,7 @@ export class QuotationsService {
     // pedido (el vendedor no vuelve a contestar nada de esto).
     const combinedNotes = isReconfirm
       ? (quotation.generatedOrder!.notes ?? null)
-      : [quotation.notes, confirmationNote]
+      : [confirmationNote, quotation.notes]
           .filter((n): n is string => !!n && n.trim().length > 0)
           .join('\n\n') || null;
     const finalClientId = isReconfirm
