@@ -92,7 +92,7 @@ export class ChecklistsService {
   // los escribe a mano, cambian solo si cambia el pedido.
   private async buildDynamicItems(
     orderId: number,
-  ): Promise<{ id: number; label: string }[]> {
+  ): Promise<{ id: number; label: string; group: string }[]> {
     const [materials, order] = await Promise.all([
       this.reportsService.generateProfilesReport(orderId).catch(() => []),
       this.prisma.order.findMany({
@@ -118,11 +118,13 @@ export class ChecklistsService {
       .filter((m) => m.tipo === 'ACCESORIO')
       .map((m) => ({
         id: nextDynamicId(),
+        group: 'Accesorios',
         label: `${m.nombre} — ${m.cantidad} ${m.unidad || 'unidad(es)'}${m.color ? ` (${m.color})` : ''}`,
       }));
 
     const windowItems = (order?.windows || []).map((w, i) => ({
       id: nextDynamicId(),
+      group: 'Ventanas',
       label: `V${i + 1} — ${w.displayName || w.windowType?.name || 'Ventana'} · ${w.width_cm}×${w.height_cm} cm · ${w.pvcColor?.name || '—'}${w.glassColor ? ` · Vidrio ${w.glassColor.name}` : ''}`,
     }));
 
