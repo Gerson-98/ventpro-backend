@@ -55,11 +55,9 @@ enum Role {
   SUPERVISOR
 }
 
-enum ChecklistType {
-  carga_camion
-  verificacion_instalacion
-  regreso
-}
+// ChecklistType (enum) se reemplazó por el modelo ChecklistCategory — ver
+// más abajo. El tipo de dato enum sigue existiendo en Postgres (sin usar)
+// porque dropearlo no es necesario y complica la migración.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // USUARIOS Y CLIENTES
@@ -591,31 +589,57 @@ model Window {
 // CHECKLISTS
 // ─────────────────────────────────────────────────────────────────────────────
 
-model ChecklistTemplate {
-  id         Int           @id @default(autoincrement())
-  type       ChecklistType
+// Antes el "tipo" de checklist era un enum fijo (3 valores, cambiar la
+// lista requería una migración). Ahora es una tabla — el admin puede crear
+// categorías de checklist nuevas desde la UI sin tocar código.
+// `dynamic` marca categorías cuyos ítems se generan solos a partir del
+// pedido (ventanas + accesorios reales, ver ChecklistsService) — los
+// templates de una categoría dynamic se SUMAN a esos ítems generados,
+// no los reemplazan (ej. "Carga de Camión" dynamic=true + templates fijos
+// como "taladro", "brocas").
+model ChecklistCategory {
+  id         Int                 @id @default(autoincrement())
+  slug       String              @unique
   label      String
-  sort_order Int           @default(0)
-  active     Boolean       @default(true)
-  createdAt  DateTime      @default(now())
-  updatedAt  DateTime      @updatedAt
-  items      ChecklistItem[]
+  icon       String              @default("📋")
+  dynamic    Boolean             @default(false)
+  sort_order Int                 @default(0)
+  active     Boolean             @default(true)
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+  templates  ChecklistTemplate[]
+  checklists Checklist[]
+
+  @@map("checklist_categories")
+}
+
+model ChecklistTemplate {
+  id          Int               @id @default(autoincrement())
+  category_id Int
+  label       String
+  sort_order  Int               @default(0)
+  active      Boolean           @default(true)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  category    ChecklistCategory @relation(fields: [category_id], references: [id], onDelete: Cascade)
+  items       ChecklistItem[]
 
   @@map("checklist_templates")
 }
 
 model Checklist {
-  id              Int           @id @default(autoincrement())
-  type            ChecklistType
+  id              Int               @id @default(autoincrement())
+  category_id     Int
   order_id        Int
   completed_by_id Int
-  completedAt     DateTime      @default(now())
+  completedAt     DateTime          @default(now())
   notes           String?
-  order           Order         @relation(fields: [order_id], references: [id], onDelete: Cascade)
-  completedBy     User          @relation(fields: [completed_by_id], references: [id])
+  category        ChecklistCategory @relation(fields: [category_id], references: [id])
+  order           Order             @relation(fields: [order_id], references: [id], onDelete: Cascade)
+  completedBy     User              @relation(fields: [completed_by_id], references: [id])
   items           ChecklistItem[]
 
-  @@unique([order_id, type])
+  @@unique([order_id, category_id])
   @@map("checklists")
 }
 

@@ -11,35 +11,51 @@ import {
   ParseIntPipe,
   UseGuards,
   Request,
-  BadRequestException,
 } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { ChecklistsService } from './checklists.service';
-import { ChecklistType } from '@prisma/client';
-
-// ─── Valores válidos del enum — validación en runtime ────────────────────────
-const VALID_CHECKLIST_TYPES: ChecklistType[] = [
-  'carga_camion',
-  'verificacion_instalacion',
-  'regreso',
-];
-
-function parseChecklistType(raw: string): ChecklistType {
-  if (!VALID_CHECKLIST_TYPES.includes(raw as ChecklistType)) {
-    throw new BadRequestException(
-      `Tipo de checklist inválido: "${raw}". Valores válidos: ${VALID_CHECKLIST_TYPES.join(', ')}`,
-    );
-  }
-  return raw as ChecklistType;
-}
 
 @UseGuards(JwtAuthGuard)
 @Controller('checklists')
 export class ChecklistsController {
   constructor(private readonly checklistsService: ChecklistsService) {}
+
+  // ─── Categorías (antes: enum fijo) — configurables desde Admin ───────────
+  @SkipThrottle()
+  @Get('categories')
+  findAllCategories() {
+    return this.checklistsService.findAllCategories();
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN')
+  @Post('categories')
+  createCategory(
+    @Body()
+    body: { slug: string; label: string; icon?: string; dynamic?: boolean; sort_order?: number },
+  ) {
+    return this.checklistsService.createCategory(body);
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN')
+  @Patch('categories/:id')
+  updateCategory(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { label?: string; icon?: string; sort_order?: number; active?: boolean },
+  ) {
+    return this.checklistsService.updateCategory(id, body);
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN')
+  @Delete('categories/:id')
+  removeCategory(@Param('id', ParseIntPipe) id: number) {
+    return this.checklistsService.removeCategory(id);
+  }
 
   @SkipThrottle()
   @Get('templates')
@@ -49,9 +65,8 @@ export class ChecklistsController {
 
   @Post('templates')
   createTemplate(
-    @Body() body: { type: ChecklistType; label: string; sort_order?: number },
+    @Body() body: { categorySlug: string; label: string; sort_order?: number },
   ) {
-    parseChecklistType(body.type as string);
     return this.checklistsService.createTemplate(body);
   }
 
@@ -77,7 +92,7 @@ export class ChecklistsController {
   @Post('order/:orderId/:type')
   complete(
     @Param('orderId', ParseIntPipe) orderId: number,
-    @Param('type') rawType: string,
+    @Param('type') categorySlug: string,
     @Body()
     body: {
       items: { templateId: number; label: string; checked: boolean }[];
@@ -85,8 +100,7 @@ export class ChecklistsController {
     },
     @Request() req,
   ) {
-    const type = parseChecklistType(rawType);
-    return this.checklistsService.complete(orderId, type, body, req.user);
+    return this.checklistsService.complete(orderId, categorySlug, body, req.user);
   }
 
   @UseGuards(RolesGuard)
@@ -94,9 +108,8 @@ export class ChecklistsController {
   @Delete('order/:orderId/:type')
   remove(
     @Param('orderId', ParseIntPipe) orderId: number,
-    @Param('type') rawType: string,
+    @Param('type') categorySlug: string,
   ) {
-    const type = parseChecklistType(rawType);
-    return this.checklistsService.remove(orderId, type);
+    return this.checklistsService.remove(orderId, categorySlug);
   }
 }

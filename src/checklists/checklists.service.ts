@@ -4,9 +4,9 @@ import {
   Injectable,
   NotFoundException,
   ConflictException,
+  BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { ChecklistType } from '@prisma/client';
 import { ReportsService } from '../reports/reports.service';
 
 interface AuthUser {
@@ -31,11 +31,66 @@ export class ChecklistsService {
     private reportsService: ReportsService,
   ) {}
 
-  // ── "Carga de Camión" es dinámico — SIEMPRE son los accesorios y
-  // ventanas reales de ESE pedido, no una lista genérica que haya que
-  // mantener a mano. Cada pedido lleva accesorios distintos (cantidades,
-  // tipos), así que no tiene sentido un ChecklistTemplate fijo para esto.
-  private async buildDynamicCargaCamionItems(
+  // ── Categorías de checklist (antes: enum fijo ChecklistType) — el admin
+  // puede crear las que necesite desde la UI, sin migraciones. `dynamic`
+  // marca si la categoría SUMA ítems generados automáticamente del pedido
+  // (ventanas + accesorios reales) a sus templates fijos.
+  async resolveCategory(slug: string) {
+    const category = await this.prisma.checklistCategory.findUnique({
+      where: { slug },
+    });
+    if (!category) {
+      throw new BadRequestException(`Categoría de checklist inválida: "${slug}"`);
+    }
+    return category;
+  }
+
+  findAllCategories() {
+    return this.prisma.checklistCategory.findMany({
+      orderBy: { sort_order: 'asc' },
+    });
+  }
+
+  async createCategory(data: {
+    slug: string;
+    label: string;
+    icon?: string;
+    dynamic?: boolean;
+    sort_order?: number;
+  }) {
+    const slug = data.slug.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    if (!slug) throw new BadRequestException('El nombre de la categoría no puede quedar vacío.');
+    const count = await this.prisma.checklistCategory.count();
+    return this.prisma.checklistCategory.create({
+      data: {
+        slug,
+        label: data.label.trim(),
+        icon: data.icon?.trim() || '📋',
+        dynamic: data.dynamic ?? false,
+        sort_order: data.sort_order ?? count,
+      },
+    });
+  }
+
+  updateCategory(
+    id: number,
+    data: { label?: string; icon?: string; sort_order?: number; active?: boolean },
+  ) {
+    return this.prisma.checklistCategory.update({ where: { id }, data });
+  }
+
+  removeCategory(id: number) {
+    // onDelete: Cascade en templates/checklists — borrar una categoría
+    // se lleva sus ítems configurados y el historial de checklists hechos
+    // con ella. Confirmación fuerte ya se pide en el frontend.
+    return this.prisma.checklistCategory.delete({ where: { id } });
+  }
+
+  // ── "Carga de Camión" (y cualquier categoría dynamic=true) suma ítems
+  // generados SIEMPRE desde el pedido real: sus ventanas (tipo, medidas,
+  // color PVC, color de vidrio) y accesorios con cantidad exacta — nadie
+  // los escribe a mano, cambian solo si cambia el pedido.
+  private async buildDynamicItems(
     orderId: number,
   ): Promise<{ id: number; label: string }[]> {
     const [materials, order] = await Promise.all([
@@ -78,25 +133,19 @@ export class ChecklistsService {
 
   findAllTemplates() {
     return this.prisma.checklistTemplate.findMany({
-      orderBy: [{ type: 'asc' }, { sort_order: 'asc' }],
+      orderBy: [{ category_id: 'asc' }, { sort_order: 'asc' }],
     });
   }
 
-  findTemplatesByType(type: ChecklistType) {
-    return this.prisma.checklistTemplate.findMany({
-      where: { type, active: true },
-      orderBy: { sort_order: 'asc' },
-    });
-  }
-
-  createTemplate(data: {
-    type: ChecklistType;
+  async createTemplate(data: {
+    categorySlug: string;
     label: string;
     sort_order?: number;
   }) {
+    const category = await this.resolveCategory(data.categorySlug);
     return this.prisma.checklistTemplate.create({
       data: {
-        type: data.type,
+        category_id: category.id,
         label: data.label,
         sort_order: data.sort_order ?? 0,
       },
@@ -121,8 +170,11 @@ export class ChecklistsService {
 
   // Obtener todos los checklists de un pedido
   async findByOrder(orderId: number) {
-    // 2 queries en paralelo en vez de 4 queries secuenciales
-    const [checklists, allTemplates] = await Promise.all([
+    const [categories, checklists, allTemplates] = await Promise.all([
+      this.prisma.checklistCategory.findMany({
+        where: { active: true },
+        orderBy: { sort_order: 'asc' },
+      }),
       this.prisma.checklist.findMany({
         where: { order_id: orderId },
         include: {
@@ -137,59 +189,58 @@ export class ChecklistsService {
       }),
     ]);
 
-    const types: ChecklistType[] = [
-      'carga_camion',
-      'verificacion_instalacion',
-      'regreso',
-    ];
+    // Una sola consulta de ítems dinámicos — se reusa para todas las
+    // categorías dynamic=true que todavía no estén completadas (en vez de
+    // volver a calcular el reporte de materiales una vez por categoría).
+    const needsDynamic = categories.some(
+      (c) => c.dynamic && !checklists.find((ch) => ch.category_id === c.id),
+    );
+    const dynamicItems = needsDynamic ? await this.buildDynamicItems(orderId) : [];
 
-    // Carga de Camión no usa templates configurados a mano — se arma solo
-    // si todavía no se completó (si ya está completo, se muestra lo que
-    // quedó guardado esa vez, no lo que el pedido tendría HOY).
-    const cargaCamionCompleted = checklists.find((c) => c.type === 'carga_camion');
-    const dynamicItems = cargaCamionCompleted
-      ? []
-      : await this.buildDynamicCargaCamionItems(orderId);
-
-    return types.map((type) => ({
-      type,
-      completed: checklists.find((c) => c.type === type) || null,
-      templates:
-        type === 'carga_camion'
-          ? dynamicItems
-          : allTemplates.filter((t) => t.type === type),
-    }));
+    return categories.map((category) => {
+      const completed = checklists.find((c) => c.category_id === category.id) || null;
+      const fixedTemplates = allTemplates.filter((t) => t.category_id === category.id);
+      const templates =
+        category.dynamic && !completed
+          ? [...dynamicItems, ...fixedTemplates]
+          : fixedTemplates;
+      return {
+        type: category.slug,
+        label: category.label,
+        icon: category.icon,
+        completed,
+        templates,
+      };
+    });
   }
 
   // Completar un checklist
   async complete(
     orderId: number,
-    type: ChecklistType,
+    categorySlug: string,
     data: {
       items: { templateId: number; label: string; checked: boolean }[];
       notes?: string;
     },
     user: AuthUser,
   ) {
-    // Verificar que el pedido existe
-    const order = await this.prisma.order.findUnique({
-      where: { id: orderId },
-    });
+    const category = await this.resolveCategory(categorySlug);
+
+    const order = await this.prisma.order.findUnique({ where: { id: orderId } });
     if (!order) throw new NotFoundException(`Pedido #${orderId} no encontrado`);
 
-    // Verificar que no esté ya completado
     const existing = await this.prisma.checklist.findUnique({
-      where: { order_id_type: { order_id: orderId, type } },
+      where: { order_id_category_id: { order_id: orderId, category_id: category.id } },
     });
     if (existing) {
       throw new ConflictException(
-        `El checklist "${type}" ya fue completado para este pedido`,
+        `El checklist "${category.label}" ya fue completado para este pedido`,
       );
     }
 
     return this.prisma.checklist.create({
       data: {
-        type,
+        category_id: category.id,
         order_id: orderId,
         completed_by_id: user.id,
         notes: data.notes,
@@ -211,14 +262,15 @@ export class ChecklistsService {
   }
 
   // Eliminar un checklist (para permitir rehacerlo)
-  async remove(orderId: number, type: ChecklistType) {
+  async remove(orderId: number, categorySlug: string) {
+    const category = await this.resolveCategory(categorySlug);
     const existing = await this.prisma.checklist.findUnique({
-      where: { order_id_type: { order_id: orderId, type } },
+      where: { order_id_category_id: { order_id: orderId, category_id: category.id } },
     });
     if (!existing) throw new NotFoundException(`Checklist no encontrado`);
 
     return this.prisma.checklist.delete({
-      where: { order_id_type: { order_id: orderId, type } },
+      where: { order_id_category_id: { order_id: orderId, category_id: category.id } },
     });
   }
 }
