@@ -506,28 +506,19 @@ export class QuotationsService {
     // FABRICACIÓN (Calendario de Fabricación) — el primer paso tras
     // confirmar. La fecha real de instalación se agenda después, por
     // separado, cuando el pedido está "fabricado".
-    const { installationStartDate, installationEndDate, marcoUbicacion, quitarEtiquetas } =
-      confirmQuotationDto;
+    const {
+      installationStartDate,
+      installationEndDate,
+      marcoUbicacion,
+      quitarEtiquetas,
+      clientId: confirmClientId,
+      referenciasInstalacion,
+    } = confirmQuotationDto;
     if (!installationStartDate || !installationEndDate) {
       throw new BadRequestException(
         'Se requieren las fechas de inicio y fin de fabricación para confirmar.',
       );
     }
-    if (!marcoUbicacion || marcoUbicacion.length === 0 || !quitarEtiquetas) {
-      throw new BadRequestException(
-        'Se requiere confirmar con el cliente la ubicación del marco y si se van a quitar etiquetas antes de agendar fabricación.',
-      );
-    }
-
-    // ── Texto que se agrega a las notas del pedido con lo que el vendedor
-    // confirmó con el cliente — queda registrado igual que cualquier otra
-    // nota manual, para que el que fabrica/instala lo vea sin preguntar de
-    // nuevo.
-    const confirmationNoteLines = [
-      `Ubicación del marco: ${marcoUbicacion.join(', ')}`,
-      `¿Quitar etiquetas?: ${quitarEtiquetas}`,
-    ];
-    const confirmationNote = confirmationNoteLines.join('\n');
 
     const startDate = new Date(installationStartDate);
     const endDate = new Date(installationEndDate);
@@ -536,7 +527,7 @@ export class QuotationsService {
       where: { id },
       include: {
         quotation_windows: { orderBy: { id: 'asc' } },
-        generatedOrder: { select: { id: true } },
+        generatedOrder: { select: { id: true, notes: true, clientId: true } },
       },
     });
 
@@ -551,6 +542,38 @@ export class QuotationsService {
     }
 
     const existingOrderId = quotation.generatedOrder?.id ?? undefined;
+    // Re-confirmar = reabrir una cotización que YA tuvo pedido (ya se le
+    // preguntó esto una vez) → no se vuelve a pedir marco/etiquetas/cliente,
+    // se conserva tal cual quedó en el pedido original.
+    const isReconfirm = !!existingOrderId;
+
+    if (!isReconfirm) {
+      if (!marcoUbicacion || marcoUbicacion.length === 0 || !quitarEtiquetas) {
+        throw new BadRequestException(
+          'Se requiere confirmar con el cliente la ubicación del marco y si se van a quitar etiquetas antes de agendar fabricación.',
+        );
+      }
+      if (!confirmClientId) {
+        throw new BadRequestException(
+          'Se requiere el nombre, teléfono y dirección del cliente antes de agendar fabricación.',
+        );
+      }
+    }
+
+    // ── Texto que se agrega a las notas del pedido con lo que el vendedor
+    // confirmó con el cliente — queda registrado igual que cualquier otra
+    // nota manual, para que el que fabrica/instala lo vea sin preguntar de
+    // nuevo. Solo se arma (y solo se guarda) la PRIMERA vez que se confirma.
+    const confirmationNoteLines = isReconfirm
+      ? []
+      : [
+          `Ubicación del marco: ${marcoUbicacion!.join(', ')}`,
+          `¿Quitar etiquetas?: ${quitarEtiquetas}`,
+          ...(referenciasInstalacion?.trim()
+            ? [`Referencias de instalación: ${referenciasInstalacion.trim()}`]
+            : []),
+        ];
+    const confirmationNote = confirmationNoteLines.join('\n');
 
     const typeIds = [
       ...new Set(quotation.quotation_windows.map((w) => w.window_type_id)),
@@ -652,9 +675,17 @@ export class QuotationsService {
       };
     }));
 
-    const combinedNotes = [quotation.notes, confirmationNote]
-      .filter((n): n is string => !!n && n.trim().length > 0)
-      .join('\n\n');
+    // Primera confirmación: arma notas nuevas y usa el cliente real elegido.
+    // Re-confirmación: NO se tocan — se conservan tal cual ya estaban en el
+    // pedido (el vendedor no vuelve a contestar nada de esto).
+    const combinedNotes = isReconfirm
+      ? (quotation.generatedOrder!.notes ?? null)
+      : [quotation.notes, confirmationNote]
+          .filter((n): n is string => !!n && n.trim().length > 0)
+          .join('\n\n') || null;
+    const finalClientId = isReconfirm
+      ? quotation.generatedOrder!.clientId
+      : confirmClientId!;
 
     return this.prisma.$transaction(async (prisma) => {
       let resultOrder: { id: number };
@@ -677,8 +708,8 @@ export class QuotationsService {
             project: quotation.project,
             total: quotation.total_price,
             include_iva: quotation.include_iva ?? false,
-            notes: combinedNotes || null,
-            clientId: quotation.clientId,
+            notes: combinedNotes,
+            clientId: finalClientId,
             fabricationStartDate: startDate,
             fabricationEndDate: endDate,
           },
@@ -690,15 +721,24 @@ export class QuotationsService {
             total: quotation.total_price,
             // Ya nace con fecha de fabricación agendada → arranca en_fabricacion
             status: OrderStatus.en_fabricacion,
-            clientId: quotation.clientId,
+            clientId: finalClientId,
             include_iva: quotation.include_iva ?? false,
-            notes: combinedNotes || null,
+            notes: combinedNotes,
             generatedFromQuotationId: id,
             fabricationStartDate: startDate,
             fabricationEndDate: endDate,
             windows: { create: windowsToCreate },
           },
         });
+
+        // Deja el cliente real elegido también en la cotización, por si se
+        // reabre/edita después — reemplaza el genérico con el que se cotizó.
+        if (confirmClientId && confirmClientId !== quotation.clientId) {
+          await prisma.quotation.update({
+            where: { id: quotation.id },
+            data: { clientId: confirmClientId },
+          });
+        }
       }
 
       await prisma.quotation.update({

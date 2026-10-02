@@ -102,18 +102,34 @@ export class ConfirmQuotationDto {
   @IsNotEmpty()
   installationEndDate: string;
 
-  // ── Datos obligatorios de instalación que el vendedor debe confirmar con
-  // el cliente ANTES de agendar fabricación (ver confirm() en el service
-  // para el texto que arma con esto). Validados también en el backend —
-  // no basta con que el frontend los pida, porque el endpoint es la única
-  // fuente de verdad de si el pedido quedó realmente confirmado.
+  // ── Datos que el vendedor confirma con el cliente SOLO la primera vez que
+  // se confirma la cotización (ver confirm() en el service). Al re-confirmar
+  // (reabrir → editar → confirmar de nuevo) estos campos se omiten y el
+  // backend conserva lo que ya había — no tiene sentido volver a preguntar.
+  // Por eso son opcionales acá; confirm() exige que vengan solo cuando
+  // corresponde (primera confirmación).
   @IsArray()
   @ArrayMinSize(1)
   @IsString({ each: true })
   @IsNotEmpty({ each: true })
-  marcoUbicacion: string[];
+  @IsOptional()
+  marcoUbicacion?: string[];
 
   @IsString()
   @IsNotEmpty()
-  quitarEtiquetas: string;
+  @IsOptional()
+  quitarEtiquetas?: string;
+
+  // Cliente real (nombre/teléfono/dirección) que se confirma por teléfono
+  // al momento de agendar — reemplaza cualquier cliente genérico con el
+  // que se haya creado la cotización original.
+  @IsNumber()
+  @IsOptional()
+  clientId?: number;
+
+  // Referencias de instalación (código de garita, portón, piso, etc.) —
+  // texto libre opcional, también solo en la primera confirmación.
+  @IsString()
+  @IsOptional()
+  referenciasInstalacion?: string;
 }
