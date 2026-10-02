@@ -684,6 +684,10 @@ export class QuotationsService {
         hojaAlto: Number(hojaAlto.toFixed(1)),
         vidrioAncho: Number(vidrioAncho.toFixed(1)),
         vidrioAlto: Number(vidrioAlto.toFixed(1)),
+        // Enlaza esta ventana del pedido con la fila de cotización que le
+        // dio origen — permite sincronizar ediciones de medidas en ambos
+        // sentidos sin tener que reabrir/re-confirmar la cotización.
+        quotation_window_id: win.id,
       };
     }));
 

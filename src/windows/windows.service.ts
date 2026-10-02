@@ -254,6 +254,27 @@ export class WindowsService {
     });
 
     if (updated.order_id) await this.recalculateOrderTotal(updated.order_id);
+
+    // ── Sincroniza de vuelta a la cotización original (si existe) ───────────
+    // Cambiar una medida desde el Pedido se refleja también en la
+    // QuotationWindow que le dio origen — así no hace falta reabrir/editar/
+    // re-confirmar la cotización solo para corregir un dato.
+    if (existing.quotation_window_id) {
+      await this.prisma.quotationWindow.update({
+        where: { id: existing.quotation_window_id },
+        data: {
+          displayName: updateData.displayName,
+          options: updateData.options,
+          width_cm: updateData.width_cm,
+          height_cm: updateData.height_cm,
+          quantity: updateData.quantity,
+          ...(data.window_type_id ? { window_type_id: windowTypeId } : {}),
+          ...(data.color_id ? { color_id: Number(data.color_id) } : {}),
+          ...(data.glass_color_id ? { glass_color_id: Number(data.glass_color_id) } : {}),
+        },
+      });
+    }
+
     return updated;
   }
 

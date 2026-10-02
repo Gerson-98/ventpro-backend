@@ -513,6 +513,7 @@ model QuotationWindow {
   windowType       WindowType @relation(fields: [window_type_id], references: [id])
   pvcColor         PvcColor   @relation(fields: [color_id], references: [id])
   glassColor       GlassColor @relation(fields: [glass_color_id], references: [id])
+  windows          Window[]
 
   @@index([quotation_id])
   @@map("QuotationWindow")
@@ -570,12 +571,17 @@ model Window {
   window_type_id   Int?
   color_id         Int?
   glass_color_id   Int?
+  // Ventana de la cotización de la que nació esta — permite que editar
+  // medidas desde el Pedido se sincronice de vuelta a la cotización
+  // original (y viceversa), sin tener que reabrir/editar/re-confirmar.
+  quotation_window_id Int?
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
   pvcColor         PvcColor?   @relation(fields: [color_id], references: [id])
   glassColor       GlassColor? @relation(fields: [glass_color_id], references: [id])
   order            Order?      @relation(fields: [order_id], references: [id])
   windowType       WindowType? @relation(fields: [window_type_id], references: [id])
+  quotationWindow  QuotationWindow? @relation(fields: [quotation_window_id], references: [id], onDelete: SetNull)
 
   @@index([order_id])
   @@map("windows")
