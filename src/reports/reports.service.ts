@@ -141,7 +141,7 @@ export class ReportsService {
     };
   }
 
-  async generateProfilesReport(orderId: number) {
+  async generateProfilesReport(orderId: number, windowIds?: number[]) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       include: {
@@ -152,8 +152,12 @@ export class ReportsService {
       },
     });
     if (!order) throw new NotFoundException(`Pedido #${orderId} no encontrado`);
+    // Permite calcular solo un subconjunto de ventanas — el cliente pidió
+    // poder excluir ventanas cuyas medidas todavía no están confirmadas,
+    // para no comprar/cortar material de algo que puede cambiar.
+    const windowIdSet = windowIds && windowIds.length > 0 ? new Set(windowIds) : null;
     const validWindows = order.windows.filter(
-      (w) => w.window_type_id && w.color_id,
+      (w) => w.window_type_id && w.color_id && (!windowIdSet || windowIdSet.has(w.id)),
     );
     return this.costCalculator.calcularReporteMateriales(
       validWindows.map((w) => this.windowToCostInput(w)),
@@ -446,7 +450,7 @@ export class ReportsService {
       monthlyData,
     };
   }
-  async generateCutOptimizationReport(orderId: number) {
+  async generateCutOptimizationReport(orderId: number, windowIds?: number[]) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       include: {
@@ -457,7 +461,11 @@ export class ReportsService {
       },
     });
     if (!order) throw new NotFoundException(`Pedido #${orderId} no encontrado`);
-    return this.generateCutOptimization(order.windows);
+    // Se pasa el array COMPLETO (no filtrado) para que el V# de cada ventana
+    // siga coincidiendo con "Detalle de Ventanas" — solo se EXCLUYE del
+    // cálculo adentro de generateCutOptimization, sin renumerar nada.
+    const windowIdSet = windowIds && windowIds.length > 0 ? new Set(windowIds) : null;
+    return this.generateCutOptimization(order.windows, windowIdSet);
   }
 
   // ─── NUEVO: Optimización global multi-pedido ──────────────────────────────
@@ -602,7 +610,7 @@ export class ReportsService {
     };
   }
 
-  async generateGlassCutReport(orderId: number) {
+  async generateGlassCutReport(orderId: number, windowIds?: number[]) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
       include: {
@@ -613,7 +621,8 @@ export class ReportsService {
       },
     });
     if (!order) throw new NotFoundException(`Pedido #${orderId} no encontrado`);
-    return this.buildGlassCutData(order.windows);
+    const windowIdSet = windowIds && windowIds.length > 0 ? new Set(windowIds) : null;
+    return this.buildGlassCutData(order.windows, windowIdSet);
   }
 
   async generateGlassCutByQuotation(quotationId: number) {
@@ -640,7 +649,7 @@ export class ReportsService {
     return this.buildGlassCutData(normalizedWindows);
   }
 
-  private async buildGlassCutData(windows: any[]) {
+  private async buildGlassCutData(windows: any[], windowIdSet?: Set<number> | null) {
     const enrichedWindows = await this.enrichWindowMeasures(windows);
     const catalogMap = new Map(
       (await this.prisma.catalogoPerfiles.findMany()).map((p) => [
@@ -666,6 +675,7 @@ export class ReportsService {
     for (let wi = 0; wi < enrichedWindows.length; wi++) {
       const window = enrichedWindows[wi];
       if (!window || !window.glassColor) continue;
+      if (windowIdSet && !windowIdSet.has(window.id)) continue;
       const glassName = window.glassColor.name;
       if (glassName.toUpperCase().includes('DUELA')) continue;
 
@@ -737,7 +747,7 @@ export class ReportsService {
     return result;
   }
 
-  private async generateCutOptimization(windows: any[]) {
+  private async generateCutOptimization(windows: any[], windowIdSet?: Set<number> | null) {
     const enrichedWindows = await this.enrichWindowMeasures(windows);
     const allMaterials = await this.prisma.material.findMany();
     const materialsById = new Map(allMaterials.map((m) => [m.id, m]));
@@ -786,6 +796,9 @@ export class ReportsService {
     for (let wi = 0; wi < enrichedWindows.length; wi++) {
       const window = enrichedWindows[wi];
       if (!window || !window.windowType || !window.pvcColor) continue;
+      // Ventana no seleccionada (medidas aún no confirmadas) — se omite del
+      // plan de corte, pero sin correr la numeración V# del resto.
+      if (windowIdSet && !windowIdSet.has(window.id)) continue;
       const catalogEntry = catalogMap.get(window.window_type_id);
       if (!catalogEntry) continue;
 

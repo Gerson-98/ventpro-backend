@@ -26,8 +26,11 @@ export class ReportsController {
   @RequirePermission('reports.profiles')
   @SkipThrottle()
   @Get('order/:orderId/profiles')
-  generateProfilesReport(@Param('orderId', ParseIntPipe) orderId: number) {
-    return this.reportsService.generateProfilesReport(orderId);
+  generateProfilesReport(
+    @Param('orderId', ParseIntPipe) orderId: number,
+    @Query('windowIds') windowIds?: string,
+  ) {
+    return this.reportsService.generateProfilesReport(orderId, parseWindowIds(windowIds));
   }
 
   @SkipThrottle()
@@ -44,8 +47,9 @@ export class ReportsController {
   @Get('order/:orderId/optimize-cuts')
   generateCutOptimizationReport(
     @Param('orderId', ParseIntPipe) orderId: number,
+    @Query('windowIds') windowIds?: string,
   ) {
-    return this.reportsService.generateCutOptimizationReport(orderId);
+    return this.reportsService.generateCutOptimizationReport(orderId, parseWindowIds(windowIds));
   }
 
   // ─── NUEVO: Optimización de corte global para múltiples pedidos ──────────
@@ -73,8 +77,11 @@ export class ReportsController {
   @RequirePermission('reports.glass_cut')
   @SkipThrottle()
   @Get('order/:orderId/glass-cuts')
-  generateGlassCutReport(@Param('orderId', ParseIntPipe) orderId: number) {
-    return this.reportsService.generateGlassCutReport(orderId);
+  generateGlassCutReport(
+    @Param('orderId', ParseIntPipe) orderId: number,
+    @Query('windowIds') windowIds?: string,
+  ) {
+    return this.reportsService.generateGlassCutReport(orderId, parseWindowIds(windowIds));
   }
 
   // ─── NUEVO: Corte de vidrio combinado para múltiples pedidos ────────────────
@@ -131,4 +138,15 @@ export class ReportsController {
       userId: userId ? Number(userId) : undefined,
     });
   }
+}
+
+// "1,2,3" → [1,2,3] — querystring de ventanas seleccionadas (checkboxes de
+// "Detalle de Ventanas"). undefined/vacío = sin filtro (todas, como antes).
+function parseWindowIds(raw?: string): number[] | undefined {
+  if (!raw) return undefined;
+  const ids = raw
+    .split(',')
+    .map((v) => Number(v.trim()))
+    .filter((v) => Number.isInteger(v) && v > 0);
+  return ids.length > 0 ? ids : undefined;
 }
