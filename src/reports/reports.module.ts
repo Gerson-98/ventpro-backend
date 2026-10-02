@@ -13,5 +13,6 @@ import { PerfilFormulasModule } from '../perfil-formulas/perfil-formulas.module'
   imports: [PrismaModule, AppSettingsModule, PermissionsModule, PerfilFormulasModule],
   controllers: [ReportsController],
   providers: [ReportsService, CostCalculatorService],
+  exports: [ReportsService],
 })
 export class ReportsModule {}

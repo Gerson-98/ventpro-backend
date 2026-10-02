@@ -622,11 +622,15 @@ model Checklist {
 model ChecklistItem {
   id          Int               @id @default(autoincrement())
   checklist_id Int
-  template_id  Int
+  // Nullable: un ítem "dinámico" (ej. un accesorio o ventana del pedido,
+  // generado automáticamente desde su reporte de materiales) no viene de
+  // ningún ChecklistTemplate configurado a mano — solo los ítems fijos
+  // (herramientas generales, etc.) tienen template_id.
+  template_id  Int?
   label        String
   checked      Boolean          @default(false)
   checklist    Checklist        @relation(fields: [checklist_id], references: [id], onDelete: Cascade)
-  template     ChecklistTemplate @relation(fields: [template_id], references: [id])
+  template     ChecklistTemplate? @relation(fields: [template_id], references: [id])
 
   @@map("checklist_items")
 }

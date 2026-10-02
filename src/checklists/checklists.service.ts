@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChecklistType } from '@prisma/client';
+import { ReportsService } from '../reports/reports.service';
 
 interface AuthUser {
   id: number;
@@ -14,9 +15,64 @@ interface AuthUser {
   role: string;
 }
 
+// Ids negativos para ítems dinámicos (nunca chocan con un template_id real,
+// que siempre es positivo por ser autoincrement) — así el frontend puede
+// seguir usando el mismo "id" como key sin tener que distinguir el origen.
+let dynamicIdCounter = 0;
+function nextDynamicId(): number {
+  dynamicIdCounter -= 1;
+  return dynamicIdCounter;
+}
+
 @Injectable()
 export class ChecklistsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private reportsService: ReportsService,
+  ) {}
+
+  // ── "Carga de Camión" es dinámico — SIEMPRE son los accesorios y
+  // ventanas reales de ESE pedido, no una lista genérica que haya que
+  // mantener a mano. Cada pedido lleva accesorios distintos (cantidades,
+  // tipos), así que no tiene sentido un ChecklistTemplate fijo para esto.
+  private async buildDynamicCargaCamionItems(
+    orderId: number,
+  ): Promise<{ id: number; label: string }[]> {
+    const [materials, order] = await Promise.all([
+      this.reportsService.generateProfilesReport(orderId).catch(() => []),
+      this.prisma.order.findMany({
+        where: { id: orderId },
+        select: {
+          windows: {
+            select: {
+              id: true,
+              displayName: true,
+              width_cm: true,
+              height_cm: true,
+              windowType: { select: { name: true } },
+              pvcColor: { select: { name: true } },
+              glassColor: { select: { name: true } },
+            },
+            orderBy: { id: 'asc' },
+          },
+        },
+      }).then((r) => r[0]),
+    ]);
+
+    const accessoryItems = (materials as any[])
+      .filter((m) => m.tipo === 'ACCESORIO')
+      .map((m) => ({
+        id: nextDynamicId(),
+        label: `${m.nombre} — ${m.cantidad} ${m.unidad || 'unidad(es)'}${m.color ? ` (${m.color})` : ''}`,
+      }));
+
+    const windowItems = (order?.windows || []).map((w, i) => ({
+      id: nextDynamicId(),
+      label: `V${i + 1} — ${w.displayName || w.windowType?.name || 'Ventana'} · ${w.width_cm}×${w.height_cm} cm · ${w.pvcColor?.name || '—'}${w.glassColor ? ` · Vidrio ${w.glassColor.name}` : ''}`,
+    }));
+
+    return [...windowItems, ...accessoryItems];
+  }
 
   // ─── TEMPLATES (admin) ────────────────────────────────────────────────────
 
@@ -87,10 +143,21 @@ export class ChecklistsService {
       'regreso',
     ];
 
+    // Carga de Camión no usa templates configurados a mano — se arma solo
+    // si todavía no se completó (si ya está completo, se muestra lo que
+    // quedó guardado esa vez, no lo que el pedido tendría HOY).
+    const cargaCamionCompleted = checklists.find((c) => c.type === 'carga_camion');
+    const dynamicItems = cargaCamionCompleted
+      ? []
+      : await this.buildDynamicCargaCamionItems(orderId);
+
     return types.map((type) => ({
       type,
       completed: checklists.find((c) => c.type === type) || null,
-      templates: allTemplates.filter((t) => t.type === type),
+      templates:
+        type === 'carga_camion'
+          ? dynamicItems
+          : allTemplates.filter((t) => t.type === type),
     }));
   }
 
@@ -128,7 +195,9 @@ export class ChecklistsService {
         notes: data.notes,
         items: {
           create: data.items.map((item) => ({
-            template_id: item.templateId,
+            // ids negativos = ítem dinámico (accesorio/ventana del pedido),
+            // no corresponde a ningún ChecklistTemplate real.
+            template_id: item.templateId > 0 ? item.templateId : null,
             label: item.label,
             checked: item.checked,
           })),
