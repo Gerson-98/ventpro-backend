@@ -64,6 +64,27 @@ export class PerfilFormulasService {
     else this.formulasCache.clear();
   }
 
+  // Carga en UNA consulta las fórmulas de varios tipos de ventana y las deja
+  // en cache (los que no tienen ninguna quedan como lista vacía). Evita una
+  // consulta por tipo al calcular cotizaciones grandes.
+  async preload(windowTypeIds: number[]): Promise<void> {
+    const now = Date.now();
+    const missing = [...new Set(windowTypeIds)].filter((id) => {
+      const c = this.formulasCache.get(id);
+      return !c || now > c.expiresAt;
+    });
+    if (missing.length === 0) return;
+    const rows = await this.prisma.perfilFormula.findMany({
+      where: { window_type_id: { in: missing } },
+      orderBy: [{ slot: 'asc' }, { origen: 'asc' }],
+    });
+    const byType = new Map<number, any[]>(missing.map((id) => [id, []]));
+    rows.forEach((r) => byType.get(r.window_type_id)!.push(r));
+    byType.forEach((value, id) =>
+      this.formulasCache.set(id, { value, expiresAt: Date.now() + CACHE_TTL_MS }),
+    );
+  }
+
   // Trae todas las fórmulas configuradas para un tipo de ventana.
   async findByWindowType(windowTypeId: number) {
     const cached = this.formulasCache.get(windowTypeId);

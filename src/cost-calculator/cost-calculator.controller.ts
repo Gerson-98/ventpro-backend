@@ -1,6 +1,6 @@
 // RUTA: src/cost-calculator/cost-calculator.controller.ts
 
-import { Controller, Post, Body, UseGuards, Request } from '@nestjs/common';
+import { Controller, Get, Post, Body, UseGuards, Request } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import {
   CostCalculatorService,
@@ -30,6 +30,13 @@ function sanitizarParaVendedor(
 @Controller('cost-calculator')
 export class CostCalculatorController {
   constructor(private readonly costCalculatorService: CostCalculatorService) {}
+
+  // El frontend lo llama al abrir el modal de cotización: deja la cache lista
+  // para que el primer cálculo no pague las consultas en frío.
+  @Get('warmup')
+  async warmup() {
+    return this.costCalculatorService.warmUp();
+  }
 
   // ── Calcular costo de UNA ventana ──────────────────────────────────────────
   @Post('window')

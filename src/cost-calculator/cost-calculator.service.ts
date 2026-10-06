@@ -1,6 +1,6 @@
 // RUTA: src/cost-calculator/cost-calculator.service.ts
 
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnApplicationBootstrap, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AppSettingsService } from '../app-settings/app-settings.service';
 import { guillotinePackCount } from '../common/guillotine-pack';
@@ -84,7 +84,8 @@ interface CacheEntry<T> {
 }
 
 @Injectable()
-export class CostCalculatorService {
+export class CostCalculatorService implements OnApplicationBootstrap {
+  private readonly logger = new Logger(CostCalculatorService.name);
   constructor(
     private prisma: PrismaService,
     private appSettings: AppSettingsService,
@@ -144,6 +145,108 @@ export class CostCalculatorService {
     value: T,
   ): void {
     cache.set(key, { value, expiresAt: Date.now() + CACHE_TTL_MS });
+  }
+
+  // ── Precarga por lotes ──────────────────────────────────────────────────────
+  // Calcular una cotización de 25 ventanas en frío hacía cientos de consultas
+  // pequeñas, una tras otra (cada una cuesta un viaje a la base de datos).
+  // Aquí se piden de una vez, UNA consulta por tipo de dato, solo lo que aún no
+  // está en cache, y se deja listo para que el cálculo posterior no consulte nada.
+  async precargarDatos(
+    windows: { window_type_id: number; color_id?: number | null; glass_color_id?: number | null }[],
+  ): Promise<void> {
+    const uniq = (xs: (number | null | undefined)[]) => [...new Set(xs.filter((x): x is number => !!x))];
+    const typeIds = uniq(windows.map((w) => w.window_type_id));
+    const colorIds = uniq(windows.map((w) => w.color_id));
+    const glassIds = uniq(windows.map((w) => w.glass_color_id));
+    const miss = (cache: Map<number, any>, ids: number[]) =>
+      ids.filter((id) => this.getFromCache(cache, id) === null);
+
+    const mTypes = miss(this.windowTypeCache, typeIds);
+    const mCatalogo = miss(this.catalogoCache, typeIds);
+    const mParams = miss(this.calcParamsCache, typeIds);
+    const mRules = miss(this.accessoryRulesCache, typeIds);
+    const mColors = miss(this.pvcColorCache, colorIds);
+    const mGlass = miss(this.glassColorFullCache, glassIds);
+
+    const [types, catalogos, params, rules, colors, glasses] = await Promise.all([
+      mTypes.length ? this.prisma.windowType.findMany({ where: { id: { in: mTypes } } }) : [],
+      mCatalogo.length
+        ? this.prisma.catalogoPerfiles.findMany({
+            where: { window_type_id: { in: mCatalogo } },
+            include: {
+              perfilMarco: true, perfilHoja: true, perfilMosquitero: true,
+              perfilBatiente: true, perfilTapajamba: true,
+              refuerzoHoja: true, refuerzoMosquitero: true,
+            },
+          })
+        : [],
+      mParams.length ? this.prisma.windowCalculation.findMany({ where: { window_type_id: { in: mParams } } }) : [],
+      mRules.length
+        ? this.prisma.accessoryRule.findMany({ where: { window_type_id: { in: mRules } }, include: { material: true } })
+        : [],
+      mColors.length ? this.prisma.pvcColor.findMany({ where: { id: { in: mColors } } }) : [],
+      mGlass.length ? this.prisma.glassColor.findMany({ where: { id: { in: mGlass } }, include: { material: true } }) : [],
+      this.perfilFormulas.preload(typeIds),
+    ] as const).then((r) => r.slice(0, 6) as [any[], any[], any[], any[], any[], any[]]);
+
+    types.forEach((t) => this.setInCache(this.windowTypeCache, t.id, t));
+    catalogos.forEach((c) => this.setInCache(this.catalogoCache, c.window_type_id, c));
+    params.forEach((c) => this.setInCache(this.calcParamsCache, c.window_type_id, c));
+    mRules.forEach((id) => this.setInCache(this.accessoryRulesCache, id, rules.filter((r) => r.window_type_id === id)));
+    colors.forEach((c) => this.setInCache(this.pvcColorCache, c.id, c));
+    glasses.forEach((g) => {
+      this.setInCache(this.glassColorFullCache, g.id, g);
+      if (g.name) this.setInCache(this.glassColorNameCache, g.id, g.name);
+    });
+
+    // Perfiles "override" (ruleOverrides) y refuerzos referenciados por id.
+    const overrideMaterialIds = new Set<number>();
+    catalogos.forEach((c: any) => {
+      const ov = c.ruleOverrides;
+      if (ov && typeof ov === 'object') {
+        Object.values(ov as Record<string, any>).forEach((o: any) => {
+          Object.entries(o || {}).forEach(([k, v]) => {
+            if (/^perfil_.*_id$/.test(k) && v != null && !Number.isNaN(Number(v))) overrideMaterialIds.add(Number(v));
+          });
+        });
+      }
+    });
+    const mMat = miss(this.materialCache, [...overrideMaterialIds]);
+    if (mMat.length) {
+      const mats = await this.prisma.material.findMany({ where: { id: { in: mMat } } });
+      mats.forEach((m) => this.setInCache(this.materialCache, m.id, m));
+    }
+  }
+
+  // Calienta la cache con TODO el catálogo (son pocos registros). Se llama al
+  // arrancar el servidor y cuando el vendedor abre el modal de cotización, para
+  // que el primer cálculo del día no pague las consultas en frío.
+  async warmUp(): Promise<{ tipos: number; ms: number }> {
+    const t0 = Date.now();
+    const [types, colors, glasses] = await Promise.all([
+      this.prisma.windowType.findMany({ select: { id: true } }),
+      this.prisma.pvcColor.findMany({ select: { id: true } }),
+      this.prisma.glassColor.findMany({ select: { id: true } }),
+    ]);
+    const n = Math.max(types.length, colors.length, glasses.length);
+    const fake = Array.from({ length: n }, (_, i) => ({
+      window_type_id: types[i]?.id as number,
+      color_id: colors[i]?.id,
+      glass_color_id: glasses[i]?.id,
+    })).filter((w) => w.window_type_id || w.color_id || w.glass_color_id);
+    // precargarDatos ignora ids vacíos; los tipos van en la primera pasada.
+    await this.precargarDatos(
+      fake.map((w) => ({ ...w, window_type_id: w.window_type_id ?? 0 })),
+    );
+    return { tipos: types.length, ms: Date.now() - t0 };
+  }
+
+  onApplicationBootstrap() {
+    // En segundo plano: no retrasa el arranque ni lo rompe si falla.
+    this.warmUp()
+      .then((r) => this.logger.log(`Cache de costos precalentada: ${r.tipos} tipos en ${r.ms}ms`))
+      .catch((e) => this.logger.warn(`No se pudo precalentar la cache: ${e?.message}`));
   }
 
   clearCache(): void {
@@ -909,6 +1012,7 @@ export class CostCalculatorService {
   async calcularCostoCotizacion(
     windows: WindowCostInput[],
   ): Promise<QuotationCostResult> {
+    await this.precargarDatos(windows);
     // 1. Calcular cada ventana individualmente (para devolver por_ventana)
     const resultados = await Promise.all(
       windows.map((w) => this.calcularCostoVentana(w)),
@@ -1394,6 +1498,7 @@ export class CostCalculatorService {
   async calcularReporteMateriales(
     windows: WindowCostInput[],
   ): Promise<MaterialReportLine[]> {
+    await this.precargarDatos(windows);
     const [perfilMap, { glassMap, duelaMap }] = await Promise.all([
       this.construirMapaPerfilesGlobal(windows),
       this.construirMapasVidrioGlobal(windows),
