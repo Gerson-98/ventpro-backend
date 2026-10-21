@@ -66,6 +66,7 @@ export class WindowTypesService {
       description?: string;
       series_id?: number | null;
       category_id?: number | null;
+      marco_en_u?: boolean;
     },
   ) {
     return this.prisma.windowType.update({ where: { id }, data });

@@ -7,7 +7,9 @@ import { guillotinePack } from '../common/guillotine-pack';
 import { PerfilFormulasService, SlotMeasurement } from '../perfil-formulas/perfil-formulas.service';
 
 // ── Movido al scope de archivo para que todos los métodos lo reconozcan ──────
-type LabeledCut = { length: number; windowLabel: string };
+// `angle` (opcional): ángulos de los dos extremos de la pieza, p.ej. '45°/90°'.
+// Solo se llena en marcos en "U" para indicarle al cortador cómo cortar.
+type LabeledCut = { length: number; windowLabel: string; angle?: string };
 
 // Desperdicio de sierra por corte a 45° (inglete) — aplica a todos los perfiles
 const KERF_CM = 2;
@@ -921,6 +923,10 @@ export class ReportsService {
 
       for (const profile of profiles) {
         if (!profile.incluir || !profile.material) continue;
+        // El batiente NUNCA va en el optimizador de cortes (ningún tipo de
+        // ventana). Sigue contándose en el reporte de perfiles/compra de
+        // materiales, que usa otro motor (cost-calculator).
+        if (profile.type === 'BATIENTE') continue;
         const formulaSlot = formulaSlots?.[profile.type];
         if (!formulaSlot && !profile.rule) continue;
         if (!esPerfilRecortable(profile.material)) continue;
@@ -1037,12 +1043,31 @@ export class ReportsService {
             );
         if (individualCutsWithDim.length === 0) continue;
 
+        // ── Marco en "U" (puertas) ───────────────────────────────────────────
+        // 3 piezas: travesaño superior (A) 45°/45° y 2 verticales (H) con 45°
+        // arriba y 90° abajo (van contra el piso). No hay pieza inferior, así
+        // que solo se conserva UN ancho aunque la regla del catálogo traiga 2.
+        const marcoEnU =
+          profile.type === 'MARCO' && window.windowType?.marco_en_u === true;
+        let cutsForWindow = individualCutsWithDim;
+        if (marcoEnU) {
+          let anchoVisto = false;
+          cutsForWindow = individualCutsWithDim.filter(({ dim }) => {
+            if (dim !== 'A') return true;
+            if (anchoVisto) return false;
+            anchoVisto = true;
+            return true;
+          });
+        }
+
         const allCuts: LabeledCut[] = [];
         for (let q = 0; q < windowQuantity; q++) {
-          individualCutsWithDim.forEach(({ length, dim }) => {
+          cutsForWindow.forEach(({ length, dim }) => {
             const baseLabel = `V${wi + 1}`;
             const dimLabel = `${baseLabel} ${dim} - ${(window.width_cm / 100).toFixed(2)}x${(window.height_cm / 100).toFixed(2)}m`;
-            allCuts.push({ length, windowLabel: dimLabel });
+            const cut: LabeledCut = { length, windowLabel: dimLabel };
+            if (marcoEnU) cut.angle = dim === 'A' ? '45°/45°' : '45°/90°';
+            allCuts.push(cut);
           });
         }
 
@@ -1432,6 +1457,7 @@ export class ReportsService {
           cuts: sorted.map((c) => ({
             length: c.length,
             windowLabel: c.windowLabel,
+            ...(c.angle ? { angle: c.angle } : {}),
           })),
           totalUsed: Number(totalUsed.toFixed(1)),
           waste: Number((barLength - totalUsed - bar.length * KERF_CM).toFixed(1)),

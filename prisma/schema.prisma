@@ -304,6 +304,10 @@ model WindowType {
   // Si es true, el cotizador muestra un botón opcional para adjuntar una
   // imagen de referencia del diseño, independiente de cualquier opción elegida.
   allows_reference_image Boolean         @default(false)
+  // Si es true, el marco se corta en "U" (puertas): 2 verticales (45° arriba /
+  // 90° abajo) + 1 travesaño superior (45°/45°), SIN pieza inferior. Solo
+  // afecta el plan de corte; un marco fijo normal son 4 piezas a 45°.
+  marco_en_u        Boolean              @default(false)
   // Clasificación por serie y categoría — nullable para retrocompatibilidad
   // Los tipos sin clasificar (series_id = NULL) siguen funcionando normalmente
   series_id         Int?
