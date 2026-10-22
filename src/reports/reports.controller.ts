@@ -101,6 +101,17 @@ export class ReportsController {
     return this.reportsService.generateMultiOrderGlassCutReport(ids);
   }
 
+  // ─── Plan de corte de barras para cotizaciones (revisión sin confirmar) ────
+  @UseGuards(PermissionsGuard)
+  @RequirePermission('reports.cut_optimizer')
+  @SkipThrottle()
+  @Get('quotation/:quotationId/optimize-cuts')
+  generateCutOptimizationByQuotation(
+    @Param('quotationId', ParseIntPipe) quotationId: number,
+  ) {
+    return this.reportsService.generateCutOptimizationByQuotation(quotationId);
+  }
+
   // ─── NUEVO: Glass cut para cotizaciones ─────────────────────────────────────
   @SkipThrottle()
   @Get('quotation/:quotationId/glass-cuts')

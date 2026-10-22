@@ -627,6 +627,28 @@ export class ReportsService {
     return this.buildGlassCutData(order.windows, windowIdSet);
   }
 
+  // Plan de corte de barras para una COTIZACIÓN (sin necesidad de confirmarla
+  // como pedido). Misma lógica que el plan de corte de un pedido.
+  async generateCutOptimizationByQuotation(quotationId: number) {
+    const quotation = await this.prisma.quotation.findUnique({
+      where: { id: quotationId },
+      include: {
+        quotation_windows: {
+          include: { windowType: true, pvcColor: true, glassColor: true },
+          orderBy: { id: 'asc' },
+        },
+      },
+    });
+    if (!quotation)
+      throw new NotFoundException(`Cotización #${quotationId} no encontrada`);
+    const normalizedWindows = quotation.quotation_windows.map((qw) => ({
+      ...qw,
+      options: qw.options || {},
+      quantity: qw.quantity || 1,
+    }));
+    return this.generateCutOptimization(normalizedWindows, null);
+  }
+
   async generateGlassCutByQuotation(quotationId: number) {
     const quotation = await this.prisma.quotation.findUnique({
       where: { id: quotationId },
