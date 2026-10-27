@@ -45,12 +45,35 @@ export class QuotationsController {
     @Query('search') search?: string,
     @Query('status') status?: string,
     @Query('clientStatus') clientStatus?: string,
+    @Query('userId') userId?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('belowMin') belowMin?: string,
+    @Query('followUpDays') followUpDays?: string,
   ) {
     return this.quotationsService.findAll(req.user, +page, +limit, {
       search,
       quotationStatus: status,
       clientStatus,
+      userId: userId ? Number(userId) : undefined,
+      from,
+      to,
+      belowMin: belowMin === '1' || belowMin === 'true',
+      followUpDays: followUpDays ? Number(followUpDays) : undefined,
     });
+  }
+
+  // Estadísticas para el administrador. Declarada ANTES de ':id' para que
+  // "stats" no se interprete como un id numérico.
+  @UseGuards(RolesGuard)
+  @Roles('ADMIN')
+  @Get('stats')
+  getStats(
+    @Request() req,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.quotationsService.getStats(req.user, from, to);
   }
 
   @UseGuards(PermissionsGuard)

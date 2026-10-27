@@ -82,6 +82,180 @@ export class QuotationsService {
     }
   }
 
+  // ─── Estadísticas de cotizaciones (solo ADMIN) ─────────────────────────────
+  // Para controlar la actividad de los vendedores: cuántas cotizaciones se
+  // hacen por día, valor promedio, ranking por vendedor, conversión y
+  // cotizaciones por debajo del mínimo sugerido. Las fechas se agrupan en hora
+  // de Guatemala (UTC-6, sin horario de verano).
+  async getStats(user: AuthUser, from?: string, to?: string) {
+    if (!this.isAdmin(user)) {
+      throw new ForbiddenException('Solo el administrador puede ver las estadísticas.');
+    }
+    const TZ_MS = 6 * 60 * 60 * 1000;
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const toKey = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+    const parseKey = (s?: string): number | null => {
+      if (!s || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+      const [y, m, d] = s.split('-').map(Number);
+      return Date.UTC(y, m - 1, d);
+    };
+
+    const todayLocal = Math.floor((Date.now() - TZ_MS) / DAY_MS) * DAY_MS;
+    const monthStart = (() => {
+      const t = new Date(todayLocal);
+      return Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), 1);
+    })();
+    let fromDay = parseKey(from) ?? monthStart;
+    let toDay = parseKey(to) ?? todayLocal;
+    if (toDay < fromDay) [fromDay, toDay] = [toDay, fromDay];
+    const MAX_DAYS = 366;
+    if ((toDay - fromDay) / DAY_MS + 1 > MAX_DAYS) fromDay = toDay - (MAX_DAYS - 1) * DAY_MS;
+    const days = (toDay - fromDay) / DAY_MS + 1;
+
+    const startUtc = new Date(fromDay + TZ_MS);
+    const endUtc = new Date(toDay + DAY_MS + TZ_MS); // exclusivo
+
+    const [rows, users, oldPending] = await Promise.all([
+      this.prisma.quotation.findMany({
+        where: { createdAt: { gte: startUtc, lt: endUtc } },
+        select: {
+          id: true,
+          createdAt: true,
+          status: true,
+          total_price: true,
+          precio_sugerido_minimo: true,
+          userId: true,
+        },
+      }),
+      this.prisma.user.findMany({
+        select: { id: true, name: true, role: true },
+        orderBy: { name: 'asc' },
+      }),
+      // Cotizaciones en proceso con más de 7 días sin confirmar (seguimiento)
+      this.prisma.quotation.findMany({
+        where: {
+          status: QuotationStatus.en_proceso,
+          createdAt: { lt: new Date(Date.now() - 7 * DAY_MS) },
+        },
+        select: { userId: true, total_price: true },
+      }),
+    ]);
+
+    const money = (n: number) => Math.round(n * 100) / 100;
+    const isBelowMin = (r: { total_price: number | null; precio_sugerido_minimo: number | null }) =>
+      r.total_price != null &&
+      r.precio_sugerido_minimo != null &&
+      r.precio_sugerido_minimo > 0 &&
+      r.total_price < r.precio_sugerido_minimo * 0.995;
+
+    // ── Por día ──
+    const byDayMap = new Map<string, { count: number; value: number }>();
+    for (let d = fromDay; d <= toDay; d += DAY_MS) byDayMap.set(toKey(d), { count: 0, value: 0 });
+    for (const r of rows) {
+      const k = toKey(r.createdAt.getTime() - TZ_MS);
+      const e = byDayMap.get(k);
+      if (e) {
+        e.count += 1;
+        e.value += r.total_price ?? 0;
+      }
+    }
+    const byDay = [...byDayMap.entries()].map(([date, v]) => ({
+      date,
+      count: v.count,
+      value: money(v.value),
+    }));
+    const peak = byDay.reduce((best, d) => (d.count > best.count ? d : best), { date: '', count: 0, value: 0 });
+
+    // ── Por vendedor ──
+    type Seller = {
+      userId: number | null;
+      name: string;
+      role: string | null;
+      count: number;
+      value: number;
+      confirmed: number;
+      confirmedValue: number;
+      belowMin: number;
+      lastAt: Date | null;
+      followUpCount: number;
+      followUpValue: number;
+    };
+    const sellers = new Map<number | null, Seller>();
+    const blank = (userId: number | null, name: string, role: string | null): Seller => ({
+      userId, name, role, count: 0, value: 0, confirmed: 0, confirmedValue: 0,
+      belowMin: 0, lastAt: null, followUpCount: 0, followUpValue: 0,
+    });
+    for (const u of users) sellers.set(u.id, blank(u.id, u.name, u.role));
+    const get = (id: number | null) => {
+      if (!sellers.has(id)) sellers.set(id, blank(id, id == null ? 'Sin vendedor' : `Usuario #${id}`, null));
+      return sellers.get(id)!;
+    };
+    for (const r of rows) {
+      const s = get(r.userId);
+      s.count += 1;
+      s.value += r.total_price ?? 0;
+      if (r.status === QuotationStatus.confirmado) {
+        s.confirmed += 1;
+        s.confirmedValue += r.total_price ?? 0;
+      }
+      if (isBelowMin(r)) s.belowMin += 1;
+      if (!s.lastAt || r.createdAt > s.lastAt) s.lastAt = r.createdAt;
+    }
+    for (const r of oldPending) {
+      const s = get(r.userId);
+      s.followUpCount += 1;
+      s.followUpValue += r.total_price ?? 0;
+    }
+    const bySeller = [...sellers.values()]
+      // Solo usuarios con cotizaciones o vendedores/supervisores (para ver a quien no cotizó)
+      .filter((s) => s.count > 0 || s.followUpCount > 0 || s.role === 'VENDEDOR' || s.role === 'SUPERVISOR')
+      .map((s) => ({
+        userId: s.userId,
+        name: s.name,
+        role: s.role,
+        count: s.count,
+        value: money(s.value),
+        avg: s.count ? money(s.value / s.count) : 0,
+        confirmed: s.confirmed,
+        confirmedValue: money(s.confirmedValue),
+        conversion: s.count ? Math.round((s.confirmed / s.count) * 1000) / 10 : 0,
+        perDay: Math.round((s.count / days) * 10) / 10,
+        belowMin: s.belowMin,
+        lastAt: s.lastAt,
+        followUpCount: s.followUpCount,
+        followUpValue: money(s.followUpValue),
+      }))
+      .sort((a, b) => b.count - a.count || b.value - a.value);
+
+    // ── Totales ──
+    const count = rows.length;
+    const value = rows.reduce((s, r) => s + (r.total_price ?? 0), 0);
+    const confirmedRows = rows.filter((r) => r.status === QuotationStatus.confirmado);
+    const confirmedValue = confirmedRows.reduce((s, r) => s + (r.total_price ?? 0), 0);
+
+    return {
+      period: { from: toKey(fromDay), to: toKey(toDay), days },
+      totals: {
+        count,
+        value: money(value),
+        avg: count ? money(value / count) : 0,
+        perDay: Math.round((count / days) * 10) / 10,
+        confirmed: confirmedRows.length,
+        confirmedValue: money(confirmedValue),
+        conversion: count ? Math.round((confirmedRows.length / count) * 1000) / 10 : 0,
+        belowMin: rows.filter(isBelowMin).length,
+        peakDay: peak.count > 0 ? peak : null,
+      },
+      byDay,
+      bySeller,
+      followUp: {
+        days: 7,
+        count: oldPending.length,
+        value: money(oldPending.reduce((s, r) => s + (r.total_price ?? 0), 0)),
+      },
+    };
+  }
+
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
   private isAdmin(user: AuthUser): boolean {
@@ -229,12 +403,61 @@ export class QuotationsService {
     user: AuthUser,
     page = 1,
     limit = 50,
-    filters: { search?: string; quotationStatus?: string; clientStatus?: string } = {},
+    filters: {
+      search?: string;
+      quotationStatus?: string;
+      clientStatus?: string;
+      // Filtros de "detalle" del panel de estadísticas (solo tienen efecto para ADMIN)
+      userId?: number;
+      from?: string; // YYYY-MM-DD, hora de Guatemala
+      to?: string;
+      belowMin?: boolean; // total por debajo del mínimo sugerido
+      followUpDays?: number; // en proceso hace más de N días
+    } = {},
   ) {
     const safeLimit = Math.min(limit, 100);
     const skip = (page - 1) * safeLimit;
 
     const ownershipClause = this.isAdmin(user) ? {} : { userId: user.id };
+
+    // ── Filtros del panel de estadísticas (solo administrador) ──
+    const extraAnd: object[] = [];
+    if (this.isAdmin(user)) {
+      const TZ_MS = 6 * 60 * 60 * 1000;
+      const DAY_MS = 24 * 60 * 60 * 1000;
+      const parseKey = (s?: string): number | null => {
+        if (!s || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+        const [y, m, d] = s.split('-').map(Number);
+        return Date.UTC(y, m - 1, d);
+      };
+      if (filters.userId && Number.isInteger(filters.userId)) {
+        extraAnd.push({ userId: filters.userId });
+      }
+      const f = parseKey(filters.from);
+      const t = parseKey(filters.to);
+      if (f !== null || t !== null) {
+        extraAnd.push({
+          createdAt: {
+            ...(f !== null ? { gte: new Date(f + TZ_MS) } : {}),
+            ...(t !== null ? { lt: new Date(t + DAY_MS + TZ_MS) } : {}),
+          },
+        });
+      }
+      if (filters.followUpDays && filters.followUpDays > 0) {
+        extraAnd.push({
+          status: QuotationStatus.en_proceso,
+          createdAt: { lt: new Date(Date.now() - filters.followUpDays * DAY_MS) },
+        });
+      }
+      if (filters.belowMin) {
+        // Prisma no compara dos columnas entre sí: se obtienen los ids con SQL.
+        const ids = await this.prisma.$queryRaw<{ id: number }[]>`
+          SELECT id FROM "Quotation"
+          WHERE precio_sugerido_minimo > 0
+            AND total_price < precio_sugerido_minimo * 0.995`;
+        extraAnd.push({ id: { in: ids.map((r) => r.id) } });
+      }
+    }
 
     const statusClause =
       filters.quotationStatus && filters.quotationStatus !== 'todos'
@@ -262,6 +485,7 @@ export class QuotationsService {
       ...statusClause,
       ...clientStatusClause,
       ...searchClause,
+      ...(extraAnd.length ? { AND: extraAnd } : {}),
     };
 
     const [data, total] = await this.prisma.$transaction([
