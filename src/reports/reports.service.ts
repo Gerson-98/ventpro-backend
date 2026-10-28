@@ -3,7 +3,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CostCalculatorService } from '../cost-calculator/cost-calculator.service';
-import { guillotinePack } from '../common/guillotine-pack';
+import { guillotinePackBest } from '../common/guillotine-pack';
 import { PerfilFormulasService, SlotMeasurement } from '../perfil-formulas/perfil-formulas.service';
 
 // ── Movido al scope de archivo para que todos los métodos lo reconozcan ──────
@@ -750,7 +750,8 @@ export class ReportsService {
           });
         }
       }
-      const sheets = guillotinePack(expandedPieces, sheetWidth, sheetHeight);
+      // Optimizador a fondo: menos planchas y, a igual cantidad, retazos grandes reutilizables.
+      const sheets = guillotinePackBest(expandedPieces, sheetWidth, sheetHeight);
       const totalPieces = pieces.reduce((s, p) => s + p.quantity, 0);
       const totalArea = pieces.reduce(
         (s, p) => s + p.width * p.height * p.quantity,
