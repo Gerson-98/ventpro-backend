@@ -532,6 +532,11 @@ model Order {
   total                    Float?
   clientId                 Int?
   include_iva              Boolean      @default(false)
+  // Precio final congelado: cuando es true, "total" es el precio pactado con
+  // el cliente y NO se recalcula al editar medidas/ventanas del pedido.
+  priceLocked              Boolean      @default(false)
+  // Mes contable manual (lo fija el admin). NULL = se cuenta en el mes de createdAt.
+  accountingDate           DateTime?
   notes                    String?
   // Fecha de fabricación — columna física sigue llamándose installationStartDate/
   // EndDate en la BD (se usa @map para no requerir un ALTER TABLE RENAME COLUMN

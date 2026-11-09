@@ -948,6 +948,7 @@ export class QuotationsService {
             project: quotation.project,
             total: quotation.total_price,
             include_iva: quotation.include_iva ?? false,
+            priceLocked: true,
             notes: combinedNotes,
             clientId: finalClientId,
             fabricationStartDate: startDate,
@@ -959,10 +960,12 @@ export class QuotationsService {
           data: {
             project: quotation.project,
             total: quotation.total_price,
-            // Ya nace con fecha de fabricación agendada → arranca en_fabricacion
-            status: OrderStatus.en_fabricacion,
+            // Nace "En Espera" (en_proceso): el administrador lo pasa a
+            // "En Fabricación" manualmente cuando realmente empieza.
+            status: OrderStatus.en_proceso,
             clientId: finalClientId,
             include_iva: quotation.include_iva ?? false,
+            priceLocked: true,
             notes: combinedNotes,
             generatedFromQuotationId: id,
             fabricationStartDate: startDate,

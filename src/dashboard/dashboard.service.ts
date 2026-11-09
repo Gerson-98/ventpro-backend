@@ -1,6 +1,7 @@
 // RUTA: src/dashboard/dashboard.service.ts
 
 import { Injectable } from '@nestjs/common';
+import { orderDateWhere } from '../common/accounting.util';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
@@ -67,7 +68,7 @@ export class DashboardService {
       this.prisma.order.aggregate({
         where: {
           ...orderWhere,
-          createdAt: { gte: startOfMonth },
+          ...orderDateWhere({ gte: startOfMonth }),
         },
         _sum: { total: true },
       }),
@@ -76,21 +77,21 @@ export class DashboardService {
       this.prisma.order.aggregate({
         where: {
           ...orderWhere,
-          createdAt: { gte: startOfLastMonth, lte: endOfLastMonth },
+          ...orderDateWhere({ gte: startOfLastMonth, lte: endOfLastMonth }),
         },
         _sum: { total: true },
       }),
 
       // Pedidos este mes
       this.prisma.order.count({
-        where: { ...orderWhere, createdAt: { gte: startOfMonth } },
+        where: { ...orderWhere, ...orderDateWhere({ gte: startOfMonth }) },
       }),
 
       // Pedidos mes anterior
       this.prisma.order.count({
         where: {
           ...orderWhere,
-          createdAt: { gte: startOfLastMonth, lte: endOfLastMonth },
+          ...orderDateWhere({ gte: startOfLastMonth, lte: endOfLastMonth }),
         },
       }),
 
@@ -98,11 +99,9 @@ export class DashboardService {
       this.prisma.order.findMany({
         where: {
           ...orderWhere,
-          createdAt: {
-            gte: new Date(now.getFullYear(), now.getMonth() - 5, 1),
-          },
+          ...orderDateWhere({ gte: new Date(now.getFullYear(), now.getMonth() - 5, 1) }),
         },
-        select: { createdAt: true, total: true },
+        select: { createdAt: true, accountingDate: true, total: true },
         orderBy: { createdAt: 'asc' },
       }),
     ]);
@@ -110,7 +109,7 @@ export class DashboardService {
     // Procesar datos mensuales para la gráfica
     const monthlyMap: Record<string, { pedidos: number; ventas: number }> = {};
     monthlyData.forEach((row) => {
-      const date = new Date(row.createdAt);
+      const date = new Date(row.accountingDate ?? row.createdAt);
       const key = date.toLocaleString('es-GT', {
         month: 'short',
         year: 'numeric',

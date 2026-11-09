@@ -1,6 +1,7 @@
 // RUTA: src/reports/reports.service.ts
 
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { orderDateWhere } from '../common/accounting.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { CostCalculatorService } from '../cost-calculator/cost-calculator.service';
 import { guillotinePackBest } from '../common/guillotine-pack';
@@ -242,9 +243,9 @@ export class ReportsService {
     }
 
     if (filters.fromDate || filters.toDate) {
-      orderWhere.createdAt = {};
+      const dateRange: { gte?: Date; lte?: Date } = {};
       if (filters.fromDate)
-        orderWhere.createdAt.gte = new Date(filters.fromDate);
+        dateRange.gte = new Date(filters.fromDate);
       if (filters.toDate) {
         const to = new Date(filters.toDate);
         // Usar setUTCHours(29,...) en lugar de setHours(23,...):
@@ -254,8 +255,10 @@ export class ReportsService {
         // suma 29 h desde UTC midnight → 2026-06-01T05:59:59.999Z, que equivale
         // al final del día en hora local guatemalteca (UTC-6).
         to.setUTCHours(29, 59, 59, 999);
-        orderWhere.createdAt.lte = to;
+        dateRange.lte = to;
       }
+      // Mes contable: respeta el mes que el admin haya fijado al pedido.
+      Object.assign(orderWhere, orderDateWhere(dateRange));
     }
 
     if (filters.userId) {
@@ -278,6 +281,7 @@ export class ReportsService {
         status: true,
         include_iva: true,
         createdAt: true,
+        accountingDate: true,
         fabricationStartDate: true,
         client: { select: { name: true } },
         generatedFromQuotation: {
@@ -324,7 +328,7 @@ export class ReportsService {
             materialCost,
             profit,
             profitMargin: Number(profitMargin.toFixed(2)),
-            createdAt: order.createdAt,
+            createdAt: order.accountingDate ?? order.createdAt,
             fabricationStartDate: order.fabricationStartDate,
           };
         } catch {
@@ -339,7 +343,7 @@ export class ReportsService {
             materialCost: 0,
             profit: salePrice,
             profitMargin: 100,
-            createdAt: order.createdAt,
+            createdAt: order.accountingDate ?? order.createdAt,
             fabricationStartDate: order.fabricationStartDate,
           };
         }

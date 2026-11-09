@@ -15,6 +15,7 @@ import {
 import { OrderStatus, QuotationStatus, Role } from '@prisma/client';
 import { CostCalculatorService } from '../cost-calculator/cost-calculator.service';
 import { PermissionsService } from '../permissions/permissions.service';
+import { orderDateWhere, accountingMonthToDate } from '../common/accounting.util';
 
 interface AuthUser {
   id: number;
@@ -153,7 +154,7 @@ export class OrdersService {
       const [year, month] = filters.month.split('-').map(Number);
       const start = new Date(year, month - 1, 1);
       const end = new Date(year, month, 1);
-      monthClause = { createdAt: { gte: start, lt: end } };
+      monthClause = orderDateWhere({ gte: start, lt: end });
     }
 
     const searchClause =
@@ -261,6 +262,8 @@ export class OrdersService {
       total?: number;
       status?: string;
       include_iva?: boolean;
+      priceLocked?: boolean;
+      accountingMonth?: string | null;
       version?: number;
     },
     user: AuthUser,
@@ -272,6 +275,21 @@ export class OrdersService {
       const key = data.status as keyof typeof OrderStatus;
       statusEnum = OrderStatus[key];
       if (!statusEnum) throw new BadRequestException('Estado no válido');
+    }
+
+    // Mes contable: solo el administrador puede mover un pedido de mes.
+    let accountingDate: Date | null | undefined;
+    if (data.accountingMonth !== undefined) {
+      if (!this.isAdmin(user)) {
+        throw new ForbiddenException('Solo un administrador puede cambiar el mes del pedido.');
+      }
+      if (data.accountingMonth === null || data.accountingMonth === '') {
+        accountingDate = null;
+      } else if (/^d{4}-(0[1-9]|1[0-2])$/.test(data.accountingMonth)) {
+        accountingDate = accountingMonthToDate(data.accountingMonth);
+      } else {
+        throw new BadRequestException('Mes inválido. Usa el formato AAAA-MM.');
+      }
     }
 
     // Si se envía version, verificar que nadie más haya modificado el pedido
@@ -299,6 +317,8 @@ export class OrdersService {
         total: data.total ? Number(data.total) : undefined,
         status: statusEnum,
         include_iva: data.include_iva,
+        priceLocked: data.priceLocked,
+        accountingDate,
         // Incrementa version en cada actualización
         version: { increment: 1 },
       },
@@ -455,6 +475,8 @@ export class OrdersService {
       include: { windows: true },
     });
     if (!order) return;
+    // Precio final congelado: no se recalcula desde las ventanas.
+    if (order.priceLocked) return;
 
     const newTotal = order.windows.reduce(
       (sum, win) => sum + (Number(win.price) || 0),
@@ -492,10 +514,6 @@ export class OrdersService {
       data: {
         fabricationStartDate: startDate,
         fabricationEndDate: endDate,
-        status:
-          order.status === OrderStatus.en_proceso
-            ? OrderStatus.en_fabricacion
-            : undefined,
       },
     });
   }

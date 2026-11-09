@@ -52,7 +52,8 @@ export class WindowsService {
       where: { id: orderId },
       include: { windows: true },
     });
-    if (order) {
+    // Precio final congelado: el total pactado no se recalcula.
+    if (order && !order.priceLocked) {
       const newTotal = order.windows.reduce((sum, w) => {
         return sum + (Number(w.price) || 0);
       }, 0);
@@ -205,6 +206,15 @@ export class WindowsService {
 
     if (data.price !== undefined && Number(data.price) > 0)
       price = Number(data.price);
+
+    // Pedido con precio congelado: editar medidas NO cambia ningún precio.
+    if (existing.order_id) {
+      const ord = await this.prisma.order.findUnique({
+        where: { id: existing.order_id },
+        select: { priceLocked: true },
+      });
+      if (ord?.priceLocked) price = existing.price;
+    }
 
     const { hojaAncho, hojaAlto, vidrioAncho, vidrioAlto } =
       await this.calculateWindowMeasurements(
