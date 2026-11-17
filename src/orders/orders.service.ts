@@ -285,7 +285,7 @@ export class OrdersService {
       }
       if (data.accountingMonth === null || data.accountingMonth === '') {
         accountingDate = null;
-      } else if (/^d{4}-(0[1-9]|1[0-2])$/.test(data.accountingMonth)) {
+      } else if (/^\d{4}-(0[1-9]|1[0-2])$/.test(data.accountingMonth)) {
         accountingDate = accountingMonthToDate(data.accountingMonth);
       } else {
         throw new BadRequestException('Mes inválido. Usa el formato AAAA-MM.');

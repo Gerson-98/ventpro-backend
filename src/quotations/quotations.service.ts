@@ -288,6 +288,33 @@ export class QuotationsService {
 
   // ─── create ─────────────────────────────────────────────────────────────────
 
+  // ─── applyTotalOverride ──────────────────────────────────────────────────────
+  // El frontend siempre manda total_price: el calculado, o el que el vendedor
+  // escribió a mano en "Total". Si difiere del calculado, ese es el precio
+  // pactado: se guarda exacto (2 decimales) y el precio de cada ventana se
+  // escala en proporción para que la suma de ventanas (+IVA) cuadre con él.
+  // Devuelve el total final a guardar.
+  private applyTotalOverride(
+    windowsData: Array<{ price: number }>,
+    computedTotal: number,
+    requestedTotal: number | undefined | null,
+    includeIva: boolean,
+  ): number {
+    const requested = Number(requestedTotal);
+    if (!Number.isFinite(requested) || requested <= 0) return computedTotal;
+    const target = Math.round(requested * 100) / 100;
+    // Coincide con el calculado (solo ruido de redondeo del precio/m²): se
+    // guarda el total exacto en centavos, sin re-escalar ventanas.
+    if (Math.abs(target - computedTotal) < 0.005) return target;
+
+    const subTotal = windowsData.reduce((s, w) => s + (Number(w.price) || 0), 0);
+    if (subTotal > 0) {
+      const factor = target / (includeIva ? 1.05 : 1) / subTotal;
+      for (const w of windowsData) w.price = (Number(w.price) || 0) * factor;
+    }
+    return target;
+  }
+
   async create(createQuotationDto: CreateQuotationDto, user: AuthUser) {
     const {
       project,
@@ -331,6 +358,14 @@ export class QuotationsService {
     });
 
     if (include_iva) totalQuotationPrice = totalQuotationPrice * 1.05;
+
+    // Total escrito a mano por el vendedor ("precio general"): se respeta tal cual.
+    totalQuotationPrice = this.applyTotalOverride(
+      windowsData,
+      totalQuotationPrice,
+      createQuotationDto.total_price,
+      !!include_iva,
+    );
 
     // Snapshot del precio sugerido en el momento de guardado.
     // Si falla, los campos quedan null y el modal cae a su comportamiento previo.
@@ -635,9 +670,15 @@ export class QuotationsService {
       }
     }
 
-    const totalFinalCalculado = shouldIncludeIva
-      ? subTotalAcumulado * 1.05
-      : subTotalAcumulado;
+    // Total escrito a mano por el vendedor ("precio general"): antes se
+    // descartaba y se guardaba el recalculado — por eso "le da guardar y no se
+    // guarda el precio".
+    const totalFinalCalculado = this.applyTotalOverride(
+      windowsData as Array<{ price: number }>,
+      shouldIncludeIva ? subTotalAcumulado * 1.05 : subTotalAcumulado,
+      quotationData.total_price,
+      shouldIncludeIva,
+    );
 
     // Snapshot FUERA de la transacción — evita queries al cliente global
     // dentro de una transacción interactiva de Neon/pgBouncer.
