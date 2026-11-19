@@ -4,6 +4,7 @@ import {
   IsArray,
   IsBoolean,
   IsDateString,
+  IsIn,
   IsNotEmpty,
   IsNumber,
   IsObject,
@@ -79,6 +80,11 @@ export class CreateQuotationDto {
   @IsBoolean()
   @IsOptional()
   include_iva?: boolean;
+
+  // Tasa de IVA en %: solo 5 o 12. Aplica si include_iva = true.
+  @IsIn([5, 12])
+  @IsOptional()
+  iva_rate?: number;
 
   @IsNumber()
   @IsOptional()

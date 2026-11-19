@@ -298,7 +298,7 @@ export class QuotationsService {
     windowsData: Array<{ price: number }>,
     computedTotal: number,
     requestedTotal: number | undefined | null,
-    includeIva: boolean,
+    ivaMult: number,
   ): number {
     const requested = Number(requestedTotal);
     if (!Number.isFinite(requested) || requested <= 0) return computedTotal;
@@ -309,10 +309,16 @@ export class QuotationsService {
 
     const subTotal = windowsData.reduce((s, w) => s + (Number(w.price) || 0), 0);
     if (subTotal > 0) {
-      const factor = target / (includeIva ? 1.05 : 1) / subTotal;
+      const factor = target / ivaMult / subTotal;
       for (const w of windowsData) w.price = (Number(w.price) || 0) * factor;
     }
     return target;
+  }
+
+  // Solo se aceptan 5% o 12%; cualquier otro valor (o ausente) = 5%, que es
+  // el comportamiento histórico.
+  private normIvaRate(rate: number | null | undefined): number {
+    return Number(rate) === 12 ? 12 : 5;
   }
 
   async create(createQuotationDto: CreateQuotationDto, user: AuthUser) {
@@ -357,14 +363,16 @@ export class QuotationsService {
       };
     });
 
-    if (include_iva) totalQuotationPrice = totalQuotationPrice * 1.05;
+    const ivaRate = this.normIvaRate(createQuotationDto.iva_rate);
+    const ivaMult = include_iva ? 1 + ivaRate / 100 : 1;
+    totalQuotationPrice = totalQuotationPrice * ivaMult;
 
     // Total escrito a mano por el vendedor ("precio general"): se respeta tal cual.
     totalQuotationPrice = this.applyTotalOverride(
       windowsData,
       totalQuotationPrice,
       createQuotationDto.total_price,
-      !!include_iva,
+      ivaMult,
     );
 
     // Snapshot del precio sugerido en el momento de guardado.
@@ -395,6 +403,7 @@ export class QuotationsService {
               price_per_m2,
               clientId,
               include_iva: !!include_iva,
+              iva_rate: ivaRate,
               total_price: totalQuotationPrice,
               costo_total_proyecto: costSnapshot?.costo_total_proyecto ?? null,
               precio_sugerido_minimo: costSnapshot?.precio_sugerido_minimo ?? null,
@@ -613,6 +622,10 @@ export class QuotationsService {
       quotationData.price_per_m2 ?? existingQuotation.price_per_m2;
     const shouldIncludeIva =
       quotationData.include_iva ?? existingQuotation.include_iva ?? false;
+    const ivaRate = this.normIvaRate(
+      quotationData.iva_rate ?? existingQuotation.iva_rate,
+    );
+    const ivaMult = shouldIncludeIva ? 1 + ivaRate / 100 : 1;
 
     // ── Pre-calcular datos de ventanas FUERA de la transacción ───────────────
     // FIX: Antes windowsForSnapshot y snapshotPrecioSugerido se construían
@@ -675,9 +688,9 @@ export class QuotationsService {
     // guarda el precio".
     const totalFinalCalculado = this.applyTotalOverride(
       windowsData as Array<{ price: number }>,
-      shouldIncludeIva ? subTotalAcumulado * 1.05 : subTotalAcumulado,
+      subTotalAcumulado * ivaMult,
       quotationData.total_price,
-      shouldIncludeIva,
+      ivaMult,
     );
 
     // Snapshot FUERA de la transacción — evita queries al cliente global
@@ -704,6 +717,7 @@ export class QuotationsService {
         data: {
           ...quotationData,
           include_iva: shouldIncludeIva,
+          iva_rate: ivaRate,
           total_price: totalFinalCalculado,
           costo_total_proyecto: costSnapshot?.costo_total_proyecto ?? null,
           precio_sugerido_minimo: costSnapshot?.precio_sugerido_minimo ?? null,
@@ -989,6 +1003,7 @@ export class QuotationsService {
             project: quotation.project,
             total: quotation.total_price,
             include_iva: quotation.include_iva ?? false,
+            iva_rate: quotation.iva_rate ?? 5,
             priceLocked: true,
             notes: combinedNotes,
             clientId: finalClientId,
@@ -1006,6 +1021,7 @@ export class QuotationsService {
             status: OrderStatus.en_proceso,
             clientId: finalClientId,
             include_iva: quotation.include_iva ?? false,
+            iva_rate: quotation.iva_rate ?? 5,
             priceLocked: true,
             notes: combinedNotes,
             generatedFromQuotationId: id,

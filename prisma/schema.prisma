@@ -484,6 +484,8 @@ model Quotation {
   notes               String?
   reference_image_url String?
   include_iva         Boolean         @default(false)
+  // Tasa de IVA en % (5 o 12) — aplica solo si include_iva = true.
+  iva_rate            Float           @default(5)
   createdAt           DateTime        @default(now())
   updatedAt           DateTime        @updatedAt
   client              Client?         @relation(fields: [clientId], references: [id])
@@ -532,6 +534,8 @@ model Order {
   total                    Float?
   clientId                 Int?
   include_iva              Boolean      @default(false)
+  // Tasa de IVA en % (5 o 12) heredada de la cotización al confirmar.
+  iva_rate                 Float        @default(5)
   // Precio final congelado: cuando es true, "total" es el precio pactado con
   // el cliente y NO se recalcula al editar medidas/ventanas del pedido.
   priceLocked              Boolean      @default(false)
